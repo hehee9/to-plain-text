@@ -21,39 +21,121 @@ function mdToText(markdown) {
         IMAGE: /(!?)\[([^\]]+)\]\(([^)]+)\)/g,
         HORIZONTAL_LINE: /^([-*]){3,}$/gm,
         HEADING: /^(#+)\s+(.*)/gm,
-        LIST: /^(\s*)([-*])\s+(.*)/gm,
-        BLOCKQUOTE: /^(>+)\s+(.*)/gm
+        LIST: /^([ \t]*)([-*])\s+(.*)/gm,
+        BLOCKQUOTE: /^((?:>\s*)+)(.*)/gm
     };
 
     const codeBlocks = [];
     const inlineCodes = [];
-    const TOKEN_START = "%%TOK%%S%%";
-    const TOKEN_END = "%%TOK%%E%%";
-
-    // URL 임시 보호용 토큰
     const protectedUrls = [];
     const URL_REGEX = /(?:https?:\/\/)[^\s\[\]()]*/g;
 
-    // 변환 시작
+    // 다른 마크다운 변환에 영향을 안 받도록 특수문자 사용
+    const indexChar = "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ０１２３４５６７８９";
+    const TOKEN_START = "乜𪚥";
+    const TOKEN_END = "𪚥乜";
+    const TOKEN_URL = "有斡恚累";
+    const TOKEN_CODE = "高頭不歷";
+    const TOKEN_INLINE = "引羅引";
+
+
+    /** @description 볼드체 특수문자 변환 함수 (숫자, 알파벳) */
+    function convertToBoldSpecial(text) {
+        return text.replace(/[0-9a-zA-Z]/g, (char) => {
+            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7CE + (char.charCodeAt(0) - "0".charCodeAt(0)));
+            else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D5D4 + (char.charCodeAt(0) - "A".charCodeAt(0)));
+            else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D5EE + (char.charCodeAt(0) - "a".charCodeAt(0)));
+            return char;
+        });
+    }
+
+    /** @description 이탤릭체 특수문자 변환 함수 (알파벳) */
+    function convertToItalicSpecial(text) {
+        return text.replace(/[a-zA-Z]/g, (char) => {
+            if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D608 + (char.charCodeAt(0) - "A".charCodeAt(0)));
+            else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D622 + (char.charCodeAt(0) - "a".charCodeAt(0)));
+            return char;
+        });
+    }
+
+    /** @description 볼드+이탤릭체 특수문자 변환 함수 (알파벳, 숫자) */
+    function convertToBoldItalicSpecial(text) {
+        return text.replace(/[0-9a-zA-Z]/g, (char) => {
+            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7CE + (char.charCodeAt(0) - "0".charCodeAt(0)));
+            else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D468 + (char.charCodeAt(0) - "A".charCodeAt(0)));
+            else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D482 + (char.charCodeAt(0) - "a".charCodeAt(0)));
+            return char;
+        });
+    }
+
+    /** @description 텍스트가 모두 변환 가능한 문자인지 확인 */
+    function isAllConvertible(text, includeNumbers) {
+        // 허용 특수문자
+        const allowedSpecialChars = [
+            "+", "-", "*", "/", "=", "<", ">", "%", "^", "±", "×", "÷", "°",
+            "!", "?", ".", ",", ":", ";", "'", '"', "`",
+            "(", ")", "[", "]", "{", "}",
+            "@", "#", "$", "&", "|", "\\", "_", "~", "§", "©", "®", "™", "€", "£", "¥", "¢",
+            
+            "！", "？", "．", "，", "：", "；", "＇", "＂",
+            "（", "）", "［", "］", "｛", "｝", "〈", "〉", "《", "》", "「", "」", "『", "』",
+            "＠", "＃", "＄", "％", "＆", "＊", "＋", "－", "＝", "＼", "｜", "～", "＿",
+            "※", "★", "☆", "♪", "♡", "♢", "♦", "♧", "♠"
+        ];
+        
+        // 정규식에서 사용할 수 있도록 이스케이프
+        const escapedChars = allowedSpecialChars.map(char => 
+            char.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
+        ).join('');
+        
+        // 숫자 포함 여부에 따라 패턴 결정
+        const numberPattern = includeNumbers ? '0-9' : '';
+        const allowedPattern = new RegExp(`^[${numberPattern}a-zA-Z\\s${escapedChars}]*$`);
+        return allowedPattern.test(text);
+    }
+
+
+    /** @description 볼드체 처리 함수 */
+    function processBold(match, delimiter, content) {
+        const converted = convertToBoldSpecial(content);
+        return isAllConvertible(content, true) ? converted : "❪" + converted + "❫";
+    }
+
+    /** @description 이탤릭체 처리 함수 */
+    function processItalic(match, delimiter, content) {
+        const converted = convertToItalicSpecial(content);
+        return isAllConvertible(content, false) ? converted : "❬" + converted + "❭";
+    }
+
+    /** @description 볼드+이탤릭체 처리 함수 */
+    function processBoldItalic(match, delimiter, content) {
+        const converted = convertToBoldItalicSpecial(content);
+        return isAllConvertible(content, true) ? converted : "❮" + converted + "❯";
+    }
+
+
+
+    /* =========================== 변환 시작 =========================== */
+
+
     let result = markdown;
 
-    // URL 보호
+    /** @description URL 보호 */
     result = result.replace(URL_REGEX, function(url) {
-        const token = TOKEN_START + "URL" + protectedUrls.length + TOKEN_END;
+        const token = TOKEN_START + TOKEN_URL + indexChar[protectedUrls.length] + TOKEN_END;
         protectedUrls.push(url);
         return token;
     });
 
     // 마크다운 변환 로직
     result = result
+        // 코드 블록, 인라인 코드 토큰화
         .replace(MD_PATTERNS.CODE_BLOCK, processCodeBlock)
         .replace(/`([^\n`]+)`/g, processInlineCode)
-        .replace(MD_PATTERNS.BOLD_ITALIC, "❮$2❯")
-        .replace(MD_PATTERNS.BOLD, "❪$2❫")
-        .replace(MD_PATTERNS.ITALIC, '❬$2❭')
-        .replace(MD_PATTERNS.STRIKETHROUGH, processStrikethrough)
+        
+        // 줄 단위 요소 처리
         .replace(MD_PATTERNS.HORIZONTAL_LINE, "━".repeat(20))
-        .replace(MD_PATTERNS.HEADING, function(_, hashes, content) {
+        .replace(MD_PATTERNS.HEADING, (match, hashes, content) => {
             const level = hashes.length;
             const indent = " ".repeat(Math.max(0, 8 - level * 2));
             let pureContent = content;
@@ -67,53 +149,57 @@ function mdToText(markdown) {
             }
             return "\n" + indent + "【" + content + "】\n";
         })
-        .replace(MD_PATTERNS.LIST, function(_, spaces, __, content) {
+        .replace(MD_PATTERNS.LIST, (match, spaces, marker, content) => {
             const level = Math.floor(spaces.length / 2);
             const markers = ["⦁", "￮", "▸", "▹"];
-            const marker = markers[Math.min(level, markers.length - 1)];
-            return " ".repeat(level * 2) + marker + " " + content;
+            const bullet = markers[Math.min(level, markers.length - 1)];
+            return " ".repeat(level * 2) + bullet + " " + content;
         })
-        .replace(MD_PATTERNS.BLOCKQUOTE, function(_, quotes, content) {
-            const level = quotes.length;
+        .replace(MD_PATTERNS.BLOCKQUOTE, (match, quotes, content) => {
+            const level = (quotes.match(/>/g) || []).length;
             return " ".repeat(level * 2) + "‖ ".repeat(level) + content;
-        });
+        })
+        
+        // 인라인 요소 처리
+        .replace(MD_PATTERNS.BOLD_ITALIC, processBoldItalic)
+        .replace(MD_PATTERNS.BOLD, processBold)
+        .replace(MD_PATTERNS.ITALIC, processItalic)
+        .replace(MD_PATTERNS.STRIKETHROUGH, processStrikethrough);
 
-    // 마크다운 표 변환 로직
+
+    // 마크다운 표 변환
     const TABLE_REGEX = /(^\|.*\|[ \t]*\n)(^\|[ \t]*[-:| \t]+[ \t]*\n)((?:^\|.*\|[ \t]*\n?)+)/gm;
     result = result.replace(TABLE_REGEX, processTable);
 
-    // 토큰 복원: 인라인 코드 먼저
-    inlineCodes.forEach(function(code, n) {
-        result = result.replace(new RegExp(TOKEN_START + "IC" + n + TOKEN_END, "g"), "⦗ " + code + " ⦘");
+    // 토큰 복원: 인라인 코드
+    inlineCodes.forEach((code, n) => {
+        result = result.replace(new RegExp(TOKEN_START + TOKEN_INLINE + indexChar[n] + TOKEN_END, "g"), "⦗ " + code + " ⦘");
     });
 
     // 토큰 복원: 코드 블록
-    codeBlocks.forEach(function(obj, n) {
+    codeBlocks.forEach((obj, n) => {
         const border = "━".repeat(5);
         const formattedBlock = "\n┏" + border + " " + (obj.lang.trim() || "Code") + " " + border + "┓\n" + obj.code.trim() + "\n┗" + "━".repeat(10 + Math.ceil((obj.lang.trim() || "Code").length / 2)) + "┛\n";
-        result = result.replace(new RegExp(TOKEN_START + "CB" + n + TOKEN_END, "g"), formattedBlock);
+        result = result.replace(new RegExp(TOKEN_START + TOKEN_CODE + indexChar[n] + TOKEN_END, "g"), formattedBlock);
     });
 
     // URL 복원
-    protectedUrls.forEach(function(url, i) {
-        result = result.replace(new RegExp(TOKEN_START + "URL" + i + TOKEN_END, "g"), url);
+    protectedUrls.forEach((url, i) => {
+        result = result.replace(new RegExp(TOKEN_START + TOKEN_URL + indexChar[i] + TOKEN_END, "g"), url);
     });
 
+    // 이미지 처리
     result = result
-        .replace(MD_PATTERNS.IMAGE, function(match, imgFlag, text, url) {
-            // 대괄호 안의 텍스트가 URL인지 (동일한지) 확인
-            if (text.trim().toLowerCase() === url.trim().toLowerCase()) {
-                return url + " ";
-            }
-            // 일반적인 경우: "텍스트( url )" 형식으로 반환
-            return text + "( " + url + " )";
-        })
+        .replace(MD_PATTERNS.IMAGE, (match, imgFlag, text, url) => {
+            if (text.trim().toLowerCase() === url.trim().toLowerCase()) return url + " ";   // 표시 텍스트 == URL
+            return text + "( " + url + " )";    // 일반적인 경우
+        });
 
     return result;
 
-    // 코드 블록 처리 함수
+    /** @description 코드 블록 처리 함수 */
     function processCodeBlock(_, lang, code) {
-        const token = TOKEN_START + "CB" + codeBlocks.length + TOKEN_END;
+        const token = TOKEN_START + TOKEN_CODE + indexChar[codeBlocks.length] + TOKEN_END;
         codeBlocks.push({
             lang: lang.trim() || "Code",
             code: code.trim()
@@ -121,19 +207,16 @@ function mdToText(markdown) {
         return token;
     }
 
-    /**
-     * @description 1줄 내의 인라인 코드를 토큰으로 대체
-     * - 개행 문자가 포함된 경우 제외
-     */
+    /** @description 1줄 내의 인라인 코드를 토큰으로 대체 */
     function processInlineCode(match, code) {
         if (code.includes("\n")) return match;
 
-        const token = TOKEN_START + "IC" + inlineCodes.length + TOKEN_END;
+        const token = TOKEN_START + TOKEN_INLINE + indexChar[inlineCodes.length] + TOKEN_END;
         inlineCodes.push(code);
         return token;
     }
 
-    // 취소선 처리
+    /** @description 취소선 처리 */
     function processStrikethrough(_, text) {
         let result = "";
         for (let char of text) result += char + "\u0336";
