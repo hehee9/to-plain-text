@@ -62,8 +62,8 @@ function mdToText(markdown) {
     function convertToBoldItalicSpecial(text) {
         return text.replace(/[0-9a-zA-Z]/g, (char) => {
             if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7CE + (char.charCodeAt(0) - "0".charCodeAt(0)));
-            else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D468 + (char.charCodeAt(0) - "A".charCodeAt(0)));
-            else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D482 + (char.charCodeAt(0) - "a".charCodeAt(0)));
+            else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D63C + (char.charCodeAt(0) - "A".charCodeAt(0)));
+            else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D656 + (char.charCodeAt(0) - "a".charCodeAt(0)));
             return char;
         });
     }
