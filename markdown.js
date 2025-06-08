@@ -21,6 +21,7 @@ function mdToText(markdown) {
         IMAGE: /(!?)\[([^\]]+)\]\(([^)]+)\)/g,
         HORIZONTAL_LINE: /^([-*]){3,}$/gm,
         HEADING: /^(#+)\s+(.*)/gm,
+        CHECKBOX: /^([ \t]*)([-*])\s+\[([ xX])\]\s+(.*)/gm,
         LIST: /^([ \t]*)([-*])\s+(.*)/gm,
         BLOCKQUOTE: /^((?:>\s*)+)(.*)/gm
     };
@@ -42,7 +43,7 @@ function mdToText(markdown) {
     /** @description 볼드체 특수문자 변환 함수 (숫자, 알파벳) */
     function convertToBoldSpecial(text) {
         return text.replace(/[0-9a-zA-Z]/g, (char) => {
-            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7CE + (char.charCodeAt(0) - "0".charCodeAt(0)));
+            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7EC + (char.charCodeAt(0) - "0".charCodeAt(0)));
             else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D5D4 + (char.charCodeAt(0) - "A".charCodeAt(0)));
             else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D5EE + (char.charCodeAt(0) - "a".charCodeAt(0)));
             return char;
@@ -61,7 +62,7 @@ function mdToText(markdown) {
     /** @description 볼드+이탤릭체 특수문자 변환 함수 (알파벳, 숫자) */
     function convertToBoldItalicSpecial(text) {
         return text.replace(/[0-9a-zA-Z]/g, (char) => {
-            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7CE + (char.charCodeAt(0) - "0".charCodeAt(0)));
+            if (char >= "0" && char <= "9") return String.fromCodePoint(0x1D7EC + (char.charCodeAt(0) - "0".charCodeAt(0)));
             else if (char >= "A" && char <= "Z") return String.fromCodePoint(0x1D63C + (char.charCodeAt(0) - "A".charCodeAt(0)));
             else if (char >= "a" && char <= "z") return String.fromCodePoint(0x1D656 + (char.charCodeAt(0) - "a".charCodeAt(0)));
             return char;
@@ -148,6 +149,11 @@ function mdToText(markdown) {
                 return "\n" + indent + "❰" + pureContent + "❱\n";
             }
             return "\n" + indent + "【" + content + "】\n";
+        })
+        .replace(MD_PATTERNS.CHECKBOX, (match, spaces, marker, checkState, content) => {
+            const level = Math.floor(spaces.length / 2);
+            const checkbox = (checkState.trim().toLowerCase() === 'x') ? '✔' : '✖';
+            return " ".repeat(level * 2) + checkbox + " " + content;
         })
         .replace(MD_PATTERNS.LIST, (match, spaces, marker, content) => {
             const level = Math.floor(spaces.length / 2);
