@@ -587,7 +587,7 @@ function LatexToText(text) {
         });
 
         // LaTeX 패턴 매칭 및 변환
-        const latexRegex = /(\\(?:begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\})|\$[^$]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g;
+        const latexRegex = /(\\(?:begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\})|\$[^$]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\boxed\{[^}]*\})/g;
         text = text.replace(latexRegex, (match) => {
             return processLatexSegment(match.replace(/^\\\(|\\\)$/g, '').replace(/^\\\[|\\\]$/g, '')); // 괄호 제거
         });
