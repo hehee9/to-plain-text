@@ -1,7 +1,7 @@
 /**
- * @description 라텍스 제거 함수
+ * @description LaTeX 제거(변환) 함수
  * @param {string} text 제거할 문자열
- * @returns {string} 라텍스 제거 문자열
+ * @returns {string} LaTeX 제거 문자열
  * 
  * @author hehee https://github.com/hehee9
  * @license CC BY-NC-SA 4.0
@@ -586,10 +586,29 @@ function LatexToText(text) {
             return token;
         });
 
-        // LaTeX 패턴 매칭 및 변환
-        const latexRegex = /(\\(?:begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\})|\$[^$]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\boxed\{[^}]*\})/g;
-        text = text.replace(latexRegex, (match) => {
-            return processLatexSegment(match.replace(/^\\\(|\\\)$/g, '').replace(/^\\\[|\\\]$/g, '')); // 괄호 제거
+        // LaTeX 패턴 순차 처리
+        const latexPatterns = [
+            // begin/end 환경
+            { regex: /\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, strip: null },
+            // $$ 블록
+            { regex: /\$\$[\s\S]+?\$\$/g, strip: /^\$\$|\$\$$/g },
+            // \[...\]
+            { regex: /\\\[[\s\S]*?\\\]/g, strip: /^\\\[|\\\]$/g },
+            // \(...\)
+            { regex: /\\\([\s\S]*?\\\)/g, strip: /^\\\(|\\\)$/g },
+            // $ 인라인
+            { regex: /\$[^$]+\$/g, strip: /^\$|\$$/g },
+            // \boxed{...}
+            { regex: /\\boxed\{[^}]*\}/g, strip: null }
+        ];
+
+        // 각 패턴을 순차적으로 처리
+        latexPatterns.forEach(({ regex, strip }) => {
+            text = text.replace(regex, (match) => {
+                // 구분자 제거
+                const cleaned = strip ? match.replace(strip, '') : match;
+                return processLatexSegment(cleaned);
+            });
         });
   
         // 코드 블록 복원
@@ -605,3 +624,6 @@ function LatexToText(text) {
         return text;
     }
 }
+
+
+// module.exports = LatexToText;

@@ -21,7 +21,7 @@ function mdToText(markdown) {
         ITALIC: /(\*|_)(.*?)\1/g,
         STRIKETHROUGH: /~~(.*?)~~/g,
         IMAGE: /(!?)\[([^\]]+)\]\(([^)]+)\)/g,
-        HORIZONTAL_LINE: /^([-*]){3,}$/gm,
+        HORIZONTAL_LINE: /^[ \t]{0,3}([-*_])[ \t]*\1[ \t]*\1(?:[ \t]*\1)*[ \t]*$/gm,
         HEADING: /^(#+)\s+(.*)/gm,
         CHECKBOX: /^([ \t]*)([-*])\s+\[([ xX])\]\s+(.*)/gm,
         LIST: /^([ \t]*)([-*])\s+(.*)/gm,
@@ -305,3 +305,6 @@ function mdToText(markdown) {
 
     return result;
 }
+
+
+// module.exports = mdToText;
