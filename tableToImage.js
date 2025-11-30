@@ -30,6 +30,9 @@ const Jsoup = Java.type("org.jsoup.Jsoup");
 const Base64 = Java.type("android.util.Base64");
 
 
+const REUSE_RECT = new RectF();
+
+
 const TF_NORMAL = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL);
 const TF_BOLD = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
 const TF_ITALIC = Typeface.create(Typeface.DEFAULT, Typeface.ITALIC);
@@ -38,10 +41,35 @@ const TF_MONO = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL);
 const TF_MONO_BOLD = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD);
 const TF_MONO_ITALIC = Typeface.create(Typeface.MONOSPACE, Typeface.ITALIC);
 const TF_MONO_BOLD_ITALIC = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD_ITALIC);
+const TF_LOOKUP = [
+    // code=0
+    TF_NORMAL,       // 0000: body, normal
+    TF_BOLD,         // 0001: header (bold 기본)
+    TF_BOLD,         // 0010: body, bold
+    TF_BOLD,         // 0011: header, bold
+    TF_ITALIC,       // 0100: body, italic
+    TF_BOLD_ITALIC,  // 0101: header, italic
+    TF_BOLD_ITALIC,  // 0110: body, bold+italic
+    TF_BOLD_ITALIC,  // 0111: header, bold+italic
+    // code=1
+    TF_MONO,              // 1000: body, code
+    TF_MONO_BOLD,         // 1001: header, code (bold 기본)
+    TF_MONO_BOLD,         // 1010: body, code+bold
+    TF_MONO_BOLD,         // 1011: header, code+bold
+    TF_MONO_ITALIC,       // 1100: body, code+italic
+    TF_MONO_BOLD_ITALIC,  // 1101: header, code+italic
+    TF_MONO_BOLD_ITALIC,  // 1110: body, code+bold+italic
+    TF_MONO_BOLD_ITALIC,  // 1111: header, code+bold+italic
+];
 
 
 const CODE_PAD_X = 10, CODE_PAD_Y = 6;
 const IMAGE_PAD_X = 8, IMAGE_PAD_Y = 6;
+
+
+const RE_ALIGN_CELL = /^:?-{2,}:?$/;
+const RE_BR_TAG = /<br\s*\/?>/gi;
+const RE_BASE64_PREFIX = /^base64[:|,]/;
 
 
 const IMG_CACHE = new Map();
@@ -63,7 +91,7 @@ function _tokenizeRow(line) {
 }
 /** @description <br> 줄바꿈 변환 */
 function _normalizeBr(s) {
-    return (s || "").replace(/<br\s*\/?>/gi, "\n");
+    return (s || "").replace(RE_BR_TAG, "\n");
 }
 
 
@@ -147,10 +175,8 @@ function _parseInlineMdToRuns(line) {
  * @param {Paint} paint
  * @return {object} { lines: {runs: object[], width: number}[], maxWidth: number, lineCount: number }
  */
-function _layoutCell(text, isHeader, paint) {
+function _layoutCell(text, isHeader, paint, fm) {
     const rawLines = _normalizeBr(text).split("\n");
-
-    const fm = paint.getFontMetrics();
     const unitH = (fm.descent - fm.ascent);
 
     let lines = [];
@@ -240,20 +266,11 @@ function _layoutCell(text, isHeader, paint) {
  * @return {android.graphics.Typeface}
  */
 function _getTypefaceFor(isHeader, run) {
-    if (run?.code) {
-        // 헤더는 기본 볼드
-        const effBold = isHeader ? true : (run.bold === true);
-        const effItalic = run.italic === true;
-        if (effBold && effItalic) return TF_MONO_BOLD_ITALIC;
-        if (effBold) return TF_MONO_BOLD;
-        if (effItalic) return TF_MONO_ITALIC;
-        return TF_MONO;
-    }
-    if (isHeader) return (run?.italic) ? TF_BOLD_ITALIC : TF_BOLD;
-    if (run?.bold && run.italic) return TF_BOLD_ITALIC;
-    if (run?.bold) return TF_BOLD;
-    if (run?.italic) return TF_ITALIC;
-    return TF_NORMAL;
+    const idx = (isHeader ? 1 : 0) |
+              (run?.bold ? 2 : 0) |
+              (run?.italic ? 4 : 0) |
+              (run?.code ? 8 : 0);
+    return TF_LOOKUP[idx];
 }
 
 
@@ -294,7 +311,7 @@ function _loadBitmapFromSrc(src) {
             return null;
         }
         if (src.startsWith("base64:") || src.startsWith("base64,")) {
-            let b64 = src.replace(/^base64[:|,]/, "");
+            let b64 = src.replace(RE_BASE64_PREFIX, "");
             const bytes = Base64.decode(b64, Base64.DEFAULT);
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
         }
@@ -312,7 +329,7 @@ function _isAlignLine(line) {
     let tokens = _tokenizeRow(line);
     if (tokens.length === 0) return false;
     for (let t of tokens) {
-        if (!/^:?-{2,}:?$/.test(t)) return false;
+        if (!RE_ALIGN_CELL.test(t)) return false;
     }
     return true;
 }
@@ -408,13 +425,16 @@ function tableToImage(table) {
         codeBgPaint.setColor(Color.rgb(238, 238, 238));
 
         // 레이아웃
+        const hfm = headerPaint.getFontMetrics();
+        const bfm = bodyPaint.getFontMetrics();
+
         const headerLayouts = new Array(cols);
-        for (let c = 0; c < cols; c++) headerLayouts[c] = _layoutCell(header[c] || "", true, headerPaint);
+        for (let c = 0; c < cols; c++) headerLayouts[c] = _layoutCell(header[c] || "", true, headerPaint, hfm);
 
         const bodyLayouts = new Array(rows);
         for (let r = 0; r < rows; r++) {
             bodyLayouts[r] = new Array(cols);
-            for (let c = 0; c < cols; c++) bodyLayouts[r][c] = _layoutCell(body[r][c] || "", false, bodyPaint);
+            for (let c = 0; c < cols; c++) bodyLayouts[r][c] = _layoutCell(body[r][c] || "", false, bodyPaint, bfm);
         }
 
         // 컬럼 너비
@@ -426,8 +446,6 @@ function tableToImage(table) {
         }
 
         // 행 높이
-        const hfm = headerPaint.getFontMetrics();
-        const bfm = bodyPaint.getFontMetrics();
         const headerLineH = (hfm.descent - hfm.ascent);
         const bodyLineH = (bfm.descent - bfm.ascent);
 
@@ -503,8 +521,8 @@ function tableToImage(table) {
                     if (run.image === true && run._img) {
                         const top = baseline + hfm.ascent + (currLineH - run._imgH) / 2;
                         const left = runX + IMAGE_PAD_X;
-                        const dst = new RectF(left, top, left + run._imgW, top + run._imgH);
-                        canvas.drawBitmap(run._img, null, dst, null);
+                        REUSE_RECT.set(left, top, left + run._imgW, top + run._imgH);
+                        canvas.drawBitmap(run._img, null, REUSE_RECT, null);
                         runX += run._w;
                         continue;
                     }
@@ -551,8 +569,8 @@ function tableToImage(table) {
                         if (run.image === true && run._img) {
                             const top = baseline + bfm.ascent + (currLineH - run._imgH) / 2;
                             const left = runX + IMAGE_PAD_X;
-                            const dst = new RectF(left, top, left + run._imgW, top + run._imgH);
-                            canvas.drawBitmap(run._img, null, dst, null);
+                            REUSE_RECT.set(left, top, left + run._imgW, top + run._imgH);
+                            canvas.drawBitmap(run._img, null, REUSE_RECT, null);
                             runX += run._w;
                             continue;
                         }
@@ -591,6 +609,11 @@ function tableToImage(table) {
         } finally {
             if (fos !== null) fos.close();
             bitmap.recycle();
+
+            for (let [, info] of IMG_CACHE) {
+                if (info.bmp && !info.bmp.isRecycled()) info.bmp.recycle();
+            }
+            IMG_CACHE.clear();
         }
         return filePath;
     } catch (e) {
