@@ -1,6 +1,14 @@
 # Changelog
 
 
+## v1.1.2 (2025.12.01)
+### Added
+- `tableToImage.js`에서 LaTeX 변환 지원
+
+### Fixed
+- `Markdown.js`에서 코드블록 내부에 남아있는 (URL/인라인) 토큰 복원 문제 수정
+
+
 ## v1.1.1 (2025.11.30)
 ### Changed
 - `Markdown.js`의 볼드/이탤릭/볼드+이탤릭 변환 시, 특수 괄호 부착 예외 조건에 이모지를 추가

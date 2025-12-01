@@ -261,7 +261,7 @@ function mdToText(markdown) {
     result = result.replace(ALL_TOKENS_REGEX, (match, type, idxChar) => {
         const index = CHAR_TO_INDEX.get(idxChar);
         if (index === undefined) return match;
-
+    
         if (type === TOKEN_INLINE) {
             return `⦗ ${inlineCodes[index]} ⦘`;
         }
@@ -269,7 +269,22 @@ function mdToText(markdown) {
             const obj = codeBlocks[index];
             const border = "━".repeat(5);
             const lang = obj.lang;
-            return `\n┏${border} ${lang} ${border}┓\n${obj.code}\n┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛\n`;
+    
+            // 코드블록 내부에 남아있는 (URL/인라인) 토큰 복원
+            const innerCode = obj.code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
+                const idx2 = CHAR_TO_INDEX.get(idxChar2);
+                if (idx2 === undefined) return m2;
+    
+                if (t2 === TOKEN_INLINE) {
+                    return `⦗ ${inlineCodes[idx2]} ⦘`;
+                }
+                if (t2 === TOKEN_URL) {
+                    return protectedUrls[idx2];
+                }
+                return m2;
+            });
+    
+            return `\n┏${border} ${lang} ${border}┓\n${innerCode}\n┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛\n`;
         }
         if (type === TOKEN_URL) {
             return protectedUrls[index];

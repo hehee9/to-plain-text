@@ -28,6 +28,7 @@ const FileOutputStream = Java.type("java.io.FileOutputStream");
 const RectF = Java.type("android.graphics.RectF");
 const Jsoup = Java.type("org.jsoup.Jsoup");
 const Base64 = Java.type("android.util.Base64");
+const URLEncoder = Java.type("java.net.URLEncoder");
 
 
 const REUSE_RECT = new RectF();
@@ -106,9 +107,9 @@ function _parseAlign(token) {
     return "left";
 }
 /**
- * @description 인라인 변환(볼드/이탤릭/취소선/인라인 코드)
+ * @description 인라인 변환(볼드/이탤릭/취소선/인라인 코드/LaTeX)
  * @param {string} line
- * @return {object[]} [{text, bold, italic, strike, code}]
+ * @return {object[]} [{text, bold, italic, strike, code} | {image:true, src, alt}]
  */
 function _parseInlineMdToRuns(line) {
     const s = line || "";
@@ -123,7 +124,7 @@ function _parseInlineMdToRuns(line) {
     while (i < s.length) {
         const ch = s.charAt(i);
 
-        // ![alt](src)
+        // 이미지 문법: ![alt](src)
         if (!code && ch === "!" && s.startsWith("![", i)) {
             const altStart = i + 2;
             const altEnd = s.indexOf("]", altStart);
@@ -141,6 +142,46 @@ function _parseInlineMdToRuns(line) {
             }
         }
 
+        // LaTeX 토큰 처리 (추가) - 코드 블록(`) 바깥에서만
+        if (!code) {
+            // $$...$$ (display math)
+            if (s.startsWith("$$", i)) {
+                const end = s.indexOf("$$", i + 2);
+                if (end > i + 2) {
+                    const tex = s.slice(i + 2, end).trim();
+                    _flush();
+                    const formula = "\\dpi{200} \\bg_white \\displaystyle " + tex;
+                    const url = "https://latex.codecogs.com/png.latex?" + URLEncoder.encode(formula, "UTF-8");
+                    runs.push({ image: true, src: url, alt: tex });
+                    i = end + 2;
+                    continue;
+                }
+            }
+            // $...$ (inline math)
+            if (ch === "$") {
+                // 이스케이프되지 않은 닫힘 '$' 찾기
+                let j = i + 1, end = -1;
+                while (true) {
+                    j = s.indexOf("$", j);
+                    if (j < 0) break;
+                    // 직전 백슬래시 개수로 이스케이프 여부 판단
+                    let bs = 0;
+                    for (let k = j - 1; k >= 0 && s.charAt(k) === "\\"; k--) bs++;
+                    if (bs % 2 === 0) { end = j; break; }
+                    j = j + 1;
+                }
+                if (end > i) {
+                    const tex = s.slice(i + 1, end).trim();
+                    _flush();
+                    const formula = "\\dpi{200} \\bg_white " + tex;
+                    const url = "https://latex.codecogs.com/png.latex?" + URLEncoder.encode(formula, "UTF-8");
+                    runs.push({ image: true, src: url, alt: tex });
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
         // 코드 토글
         if (ch === "`") {
             if (code) { _flushCode(); code = false; }
@@ -148,7 +189,7 @@ function _parseInlineMdToRuns(line) {
             i += 1; continue;
         }
 
-        // 코드 내부 리터럴 처리
+        // 코드 내부 literal 처리
         if (code) { buf += ch; i += 1; continue; }
 
         // 이스케이프
