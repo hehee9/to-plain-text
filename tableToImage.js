@@ -86,8 +86,70 @@ function _tokenizeRow(line) {
     let s = line.trim();
     if (s.startsWith("|")) s = s.slice(1);
     if (s.endsWith("|")) s = s.slice(0, -1);
-    let cells = s.split("|");
-    for (let i = 0; i < cells.length; i++) cells[i] = cells[i].trim();
+
+    const cells = [];
+    let buf = "";
+    let code = false;
+
+    for (let i = 0; i < s.length; i++) {
+        const ch = s.charAt(i);
+
+        // 코드 밖의 이스케이프 처리
+        if (!code && ch === "\\") {
+            if (i + 1 < s.length) {
+                buf += s.charAt(i + 1);
+                i += 1;
+                continue;
+            }
+            buf += "\\";
+            continue;
+        }
+
+        // 인라인 코드 토글
+        if (!code && ch === "`") {
+            // 앞으로 닫힘 백틱이 존재하는지 검색(이스케이프 무시)
+            let j = i + 1, close = -1;
+            while (true) {
+                j = s.indexOf("`", j);
+                if (j < 0) break;
+                let bs = 0;
+                for (let k = j - 1; k >= 0 && s.charAt(k) === "\\"; k--) bs++;
+                if (bs % 2 === 0) { close = j; break; }
+                j = j + 1;
+            }
+            if (close < 0) {
+                buf += ch;
+                continue;
+            }
+            code = true;
+            buf += ch;
+            continue;
+        }
+
+        // 코드 내부의 닫힘 백틱
+        if (code && ch === "`") {
+            let bs = 0;
+            for (let k = i - 1; k >= 0 && s.charAt(k) === "\\"; k--) bs++;
+            if (bs % 2 === 1) {
+                buf += ch;
+                continue;
+            }
+            code = false;
+            buf += ch;
+            continue;
+        }
+
+        // 코드 밖의 실제 셀 구분자
+        if (ch === "|" && !code) {
+            cells.push(buf.trim());
+            buf = "";
+            continue;
+        }
+
+        buf += ch;
+    }
+
+    cells.push(buf.trim());
     return cells;
 }
 /** @description <br> 줄바꿈 변환 */

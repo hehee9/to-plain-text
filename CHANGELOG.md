@@ -1,6 +1,11 @@
 # Changelog
 
 
+## v1.1.3 (2025.12.05)
+### Fixed
+- `tableToImage.js`에서 인라인 코드 범위 내의 '|' 기호에 의해 테이블 구조가 깨지는 문제 수정
+
+
 ## v1.1.2 (2025.12.01)
 ### Added
 - `tableToImage.js`에서 LaTeX 변환 지원
