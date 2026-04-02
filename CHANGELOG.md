@@ -1,8 +1,13 @@
 # Changelog
 
 
+## v1.2.1 (2026.04.02)
+### Fixed
+- `useKakaoMarkdown` 옵션이 카카오톡 마크다운 렌더링의 특수성을 반영하도록 수정
+
+
 ## v1.2.0 (2026.04.02)
-### Changed
+### Added
 - `markdown.js`의 `mdToText()`가 `useKakaoMarkdown`(카카오톡 자체 마크다운 렌더링) 옵션을 지원하도록 확장
 
 

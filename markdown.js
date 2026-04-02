@@ -206,7 +206,13 @@ function mdToText(markdown, useKakaoMarkdown = false) {
     /** @description 헤딩 들여쓰기 계산 */
     function _getHeadingIndent(level) {
         const baseIndent = Math.max(0, 8 - level * 2);
-        return " ".repeat(useKakaoMarkdown ? Math.max(0, baseIndent - 2) : baseIndent);
+        if (!useKakaoMarkdown) return " ".repeat(baseIndent);
+
+        return "　".repeat(Math.max(0, level - 1));
+    }
+    /** @description 리스트/체크박스 들여쓰기 계산 */
+    function _getListIndent(level) {
+        return useKakaoMarkdown ? "　".repeat(level) : " ".repeat(level * 2);
     }
     /** @description 카카오 헤딩 내부의 볼드만 기존 규칙으로 변환 */
     function _convertHeadingBoldForKakao(text) {
@@ -275,16 +281,61 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         const level = (quotes.match(/>/g) || []).length;
         return " ".repeat(level * 2) + "‖ ".repeat(level) + content;
     }
+    /** @description 코드블록 내부 토큰 복원 */
+    function _restoreCodeTokens(code, usePlainCodeStyle = !useKakaoMarkdown) {
+        return code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
+            const idx2 = CHAR_TO_INDEX.get(idxChar2);
+            if (idx2 === undefined) return m2;
+
+            if (t2 === TOKEN_INLINE) {
+                return usePlainCodeStyle ? `⦗ ${inlineCodes[idx2]} ⦘` : `\`${inlineCodes[idx2]}\``;
+            }
+            if (t2 === TOKEN_URL) {
+                return protectedUrls[idx2];
+            }
+            return m2;
+        });
+    }
+    /** @description 코드블록 렌더링 */
+    function _renderCodeBlock(obj, usePlainCodeStyle = !useKakaoMarkdown) {
+        const border = "━".repeat(5);
+        const lang = obj.lang;
+        const innerCode = _restoreCodeTokens(obj.code, usePlainCodeStyle);
+        const header = `┏${border} ${lang} ${border}┓`;
+        const footer = `┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛`;
+        if (!usePlainCodeStyle) {
+            const displayCode = _ensureKakaoCodeFence(innerCode);
+            return `\n${header}\n${displayCode}\n${footer}\n`;
+        }
+        return `\n${header}\n${innerCode}\n${footer}\n`;
+    }
     /** @description 카카오 인용문 내부 줄 처리 */
     function _formatKakaoBlockquoteLine(line, hasTopLevelQuote) {
         const match = line.match(/^((?:>\s*)+)(.*)$/);
         if (!match) return line;
         const level = (match[1].match(/>/g) || []).length;
+        let content = match[2];
+        content = content.replace(ALL_TOKENS_REGEX, (m, type, idxChar) => {
+            const index = CHAR_TO_INDEX.get(idxChar);
+            if (index === undefined) return m;
+            if (type === TOKEN_INLINE) return `⦗ ${inlineCodes[index]} ⦘`;
+            if (type === TOKEN_CODE) return _renderCodeBlock(codeBlocks[index], true).trim();
+            if (type === TOKEN_URL) return protectedUrls[index];
+            return m;
+        });
+
+        let prefix = "";
         if (level === 1) {
-            return hasTopLevelQuote ? match[2] : `‖ ${match[2]}`;
+            prefix = hasTopLevelQuote ? "" : "‖ ";
+        } else {
+            const indent = " ".repeat((level - 1) * 2);
+            prefix = `${indent}‖ `;
         }
-        const indent = " ".repeat((level - 1) * 2);
-        return `${indent}‖ ${match[2]}`;
+
+        const renderedLine = `${prefix}${content}`;
+        return content.includes("`")
+            ? `\`\`\`\n${renderedLine}\n\`\`\``
+            : `\`${renderedLine}\``;
     }
     /** @description 카카오 인용문 전체 블록 처리 */
     function _wrapBlockquotesForKakao(text) {
@@ -294,7 +345,6 @@ function mdToText(markdown, useKakaoMarkdown = false) {
 
         const _flush = () => {
             if (quoteLines.length === 0) return;
-            output.push("```");
             let hasTopLevelQuote = false;
             for (let i = 0; i < quoteLines.length; i++) {
                 const formatted = _formatKakaoBlockquoteLine(quoteLines[i], hasTopLevelQuote);
@@ -304,7 +354,6 @@ function mdToText(markdown, useKakaoMarkdown = false) {
                 }
                 output.push(formatted);
             }
-            output.push("```");
             quoteLines = [];
         };
 
@@ -320,25 +369,15 @@ function mdToText(markdown, useKakaoMarkdown = false) {
 
         return output.join("\n");
     }
-    /** @description 코드블록 내부 토큰 복원 */
-    function _restoreCodeTokens(code) {
-        return code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
-            const idx2 = CHAR_TO_INDEX.get(idxChar2);
-            if (idx2 === undefined) return m2;
-
-            if (t2 === TOKEN_INLINE) {
-                return useKakaoMarkdown ? `\`${inlineCodes[idx2]}\`` : `⦗ ${inlineCodes[idx2]} ⦘`;
-            }
-            if (t2 === TOKEN_URL) {
-                return protectedUrls[idx2];
-            }
-            return m2;
-        });
-    }
-    /** @description 카카오용 코드블록 펜스 보장 */
+    /** @description 카카오용 코드블록 줄별 백틱 래핑 */
     function _ensureKakaoCodeFence(code) {
-        if (/^```[\s\S]*\n```$/.test(code) || /^```[\s\S]*```$/.test(code)) return code;
-        return `\`\`\`\n${code}\n\`\`\``;
+        return code.split('\n').map(line => {
+            if (line === '') return '';
+            const maxBackticks = (line.match(/`+/g) || []).reduce((max, m) => Math.max(max, m.length), 0);
+            if (maxBackticks === 0) return '`' + line + '`';
+            const fence = '`'.repeat(Math.max(3, maxBackticks + 1));
+            return fence + '\n' + line + '\n' + fence;
+        }).join('\n');
     }
 
     // 토큰 생성 헬퍼
@@ -386,13 +425,13 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         .replace(MD_PATTERNS.CHECKBOX, (match, spaces, marker, checkState, content) => {
             const level = (spaces.length >> 1);
             const checkbox = (checkState.trim().toLowerCase() === 'x') ? '✔' : '✖';
-            return " ".repeat(level * 2) + checkbox + " " + content;
+            return _getListIndent(level) + checkbox + " " + content;
         })
         .replace(MD_PATTERNS.LIST, (match, spaces, marker, content) => {
             const level = (spaces.length >> 1);
             const markers = ["⦁", "￮", "▸", "▹"];
             const bullet = markers[Math.min(level, 3)];
-            return " ".repeat(level * 2) + bullet + " " + content;
+            return _getListIndent(level) + bullet + " " + content;
         });
 
     result = useKakaoMarkdown
@@ -443,14 +482,7 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         }
         if (type === TOKEN_CODE) {
             const obj = codeBlocks[index];
-            const border = "━".repeat(5);
-            const lang = obj.lang;
-    
-            // 코드블록 내부에 남아있는 (URL/인라인) 토큰 복원
-            const innerCode = _restoreCodeTokens(obj.code);
-            const displayCode = useKakaoMarkdown ? _ensureKakaoCodeFence(innerCode) : innerCode;
-    
-            return `\n┏${border} ${lang} ${border}┓\n${displayCode}\n┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛\n`;
+            return _renderCodeBlock(obj);
         }
         if (type === TOKEN_URL) {
             return protectedUrls[index];
