@@ -41,6 +41,7 @@ const TOKEN_END = "𪚥乜";
 const TOKEN_URL = "有斡恚累";
 const TOKEN_CODE = "高頭不歷";
 const TOKEN_INLINE = "引羅引";
+const ZERO_WIDTH_SPACE = "\u200b";
 const ALL_TOKENS_REGEX = new RegExp(
     `${TOKEN_START}(${TOKEN_URL}|${TOKEN_CODE}|${TOKEN_INLINE})(.)?${TOKEN_END}`,
     "g"
@@ -78,9 +79,10 @@ const ALLOWED_CHARS_PATTERN = (() => {
 /**
  * @description 마크다운 텍스트를 일반 텍스트로 변환
  * @param {string} markdown 마크다운 텍스트
+ * @param {boolean} [useKakaoMarkdown=false] 카카오 마크다운 활성화 여부
  * @returns {string} 일반 텍스트
  */
-function mdToText(markdown) {
+function mdToText(markdown, useKakaoMarkdown = false) {
     const codeBlocks = [];
     const inlineCodes = [];
     const protectedUrls = [];
@@ -173,6 +175,171 @@ function mdToText(markdown) {
     function _processStrikethrough(_, text) {
         return text.split('').map(c => c + '\u0336').join('');
     }
+    /** @description CommonMark 기준 기호/문장부호 여부 확인 */
+    function _isMarkdownPunctuationOrSymbol(char) {
+        if (!char || /\s/.test(char)) return false;
+        if (/[\p{P}\p{S}]/u.test(char)) return true;
+        return /[!-/:-@[-`{-~]/.test(char);
+    }
+    /** @description 강조 내부 마지막 가시 문자 반환 */
+    function _getLastVisibleChar(text) {
+        for (let i = text.length - 1; i >= 0; i--) {
+            const char = text.charAt(i);
+            if (char === ZERO_WIDTH_SPACE) continue;
+            return char;
+        }
+        return "";
+    }
+    /** @description 카카오 강조 닫힘 직전 ZWSP 필요 여부 */
+    function _shouldInsertZwspBeforeClosing(content, nextChar) {
+        if (!useKakaoMarkdown) return false;
+        if (!nextChar || /\s/.test(nextChar)) return false;
+        if (content.endsWith(ZERO_WIDTH_SPACE)) return false;
+        return _isMarkdownPunctuationOrSymbol(_getLastVisibleChar(content));
+    }
+    /** @description 카카오 강조 출력 보정 */
+    function _formatKakaoEmphasis(delimiter, content, nextChar) {
+        return _shouldInsertZwspBeforeClosing(content, nextChar)
+            ? `${delimiter}${content}${ZERO_WIDTH_SPACE}${delimiter}`
+            : `${delimiter}${content}${delimiter}`;
+    }
+    /** @description 헤딩 들여쓰기 계산 */
+    function _getHeadingIndent(level) {
+        const baseIndent = Math.max(0, 8 - level * 2);
+        return " ".repeat(useKakaoMarkdown ? Math.max(0, baseIndent - 2) : baseIndent);
+    }
+    /** @description 카카오 헤딩 내부의 볼드만 기존 규칙으로 변환 */
+    function _convertHeadingBoldForKakao(text) {
+        const _findClosingBold = (source, start, delimiter) => {
+            const marker = delimiter.charAt(0);
+            for (let i = start; i < source.length - 1; i++) {
+                if (source.slice(i, i + 2) !== delimiter) continue;
+                if (source.charAt(i - 1) === marker || source.charAt(i + 2) === marker) continue;
+                return i;
+            }
+            return -1;
+        };
+        let convertedText = "";
+        let index = 0;
+
+        while (index < text.length) {
+            const delimiter = (
+                text.slice(index, index + 2) === "**" && text.charAt(index - 1) !== "*" && text.charAt(index + 2) !== "*"
+            ) ? "**" : (
+                text.slice(index, index + 2) === "__" && text.charAt(index - 1) !== "_" && text.charAt(index + 2) !== "_"
+            ) ? "__" : null;
+
+            if (!delimiter) {
+                convertedText += text.charAt(index);
+                index++;
+                continue;
+            }
+
+            const closeIndex = _findClosingBold(text, index + 2, delimiter);
+            if (closeIndex === -1) {
+                convertedText += text.charAt(index);
+                index++;
+                continue;
+            }
+
+            const content = text.slice(index + 2, closeIndex);
+            const converted = _convertToBoldSpecial(content);
+            convertedText += _isAllConvertible(content, true) ? converted : `❪${converted}❫`;
+            index = closeIndex + 2;
+        }
+
+        return convertedText;
+    }
+    /** @description 헤딩 처리 */
+    function _processHeading(match, hashes, content) {
+        const level = hashes.length;
+        const indent = _getHeadingIndent(level);
+        let pureContent = content.trim();
+
+        if (useKakaoMarkdown) {
+            pureContent = _convertHeadingBoldForKakao(content);
+            const trailingText = match.slice(match.indexOf(content) + content.length);
+            return `\n${indent}${_formatKakaoEmphasis("**", `【${pureContent}】`, trailingText.charAt(0))}\n`;
+        }
+
+        const start = pureContent.charAt(0);
+        const end = pureContent.charAt(pureContent.length - 1);
+        if ((start === "❪" && end === "❫") || (start === "❮" && end === "❯") || (start === "❬" && end === "❭")) {
+            pureContent = pureContent.substring(1, pureContent.length - 1);
+            return `\n${indent}❰${pureContent}❱\n`;
+        }
+        return `\n${indent}【${content}】\n`;
+    }
+    /** @description 기본 인용문 처리 */
+    function _processBlockquote(match, quotes, content) {
+        const level = (quotes.match(/>/g) || []).length;
+        return " ".repeat(level * 2) + "‖ ".repeat(level) + content;
+    }
+    /** @description 카카오 인용문 내부 줄 처리 */
+    function _formatKakaoBlockquoteLine(line, hasTopLevelQuote) {
+        const match = line.match(/^((?:>\s*)+)(.*)$/);
+        if (!match) return line;
+        const level = (match[1].match(/>/g) || []).length;
+        if (level === 1) {
+            return hasTopLevelQuote ? match[2] : `‖ ${match[2]}`;
+        }
+        const indent = " ".repeat((level - 1) * 2);
+        return `${indent}‖ ${match[2]}`;
+    }
+    /** @description 카카오 인용문 전체 블록 처리 */
+    function _wrapBlockquotesForKakao(text) {
+        const lines = text.split(/\r?\n/);
+        const output = [];
+        let quoteLines = [];
+
+        const _flush = () => {
+            if (quoteLines.length === 0) return;
+            output.push("```");
+            let hasTopLevelQuote = false;
+            for (let i = 0; i < quoteLines.length; i++) {
+                const formatted = _formatKakaoBlockquoteLine(quoteLines[i], hasTopLevelQuote);
+                if (!hasTopLevelQuote && /^((?:>\s*)+)(.*)$/.test(quoteLines[i])) {
+                    const level = ((quoteLines[i].match(/^((?:>\s*)+)(.*)$/) || [])[1] || "").match(/>/g);
+                    if (level && level.length === 1) hasTopLevelQuote = true;
+                }
+                output.push(formatted);
+            }
+            output.push("```");
+            quoteLines = [];
+        };
+
+        for (let i = 0; i < lines.length; i++) {
+            if (/^((?:>\s*)+)(.*)$/.test(lines[i])) {
+                quoteLines.push(lines[i]);
+                continue;
+            }
+            _flush();
+            output.push(lines[i]);
+        }
+        _flush();
+
+        return output.join("\n");
+    }
+    /** @description 코드블록 내부 토큰 복원 */
+    function _restoreCodeTokens(code) {
+        return code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
+            const idx2 = CHAR_TO_INDEX.get(idxChar2);
+            if (idx2 === undefined) return m2;
+
+            if (t2 === TOKEN_INLINE) {
+                return useKakaoMarkdown ? `\`${inlineCodes[idx2]}\`` : `⦗ ${inlineCodes[idx2]} ⦘`;
+            }
+            if (t2 === TOKEN_URL) {
+                return protectedUrls[idx2];
+            }
+            return m2;
+        });
+    }
+    /** @description 카카오용 코드블록 펜스 보장 */
+    function _ensureKakaoCodeFence(code) {
+        if (/^```[\s\S]*\n```$/.test(code) || /^```[\s\S]*```$/.test(code)) return code;
+        return `\`\`\`\n${code}\n\`\`\``;
+    }
 
     // 토큰 생성 헬퍼
     const _makeToken = (type, index) => `${TOKEN_START}${type}${INDEX_CHAR[index]}${TOKEN_END}`;
@@ -208,25 +375,14 @@ function mdToText(markdown) {
             codeBlocks.push({ lang: (lang || "").trim() || "Code", code: (code || "").trim() });
             return (indent || "") + token;
         })
-        .replace(/`([^\n`]+)`/g, (match, code) => {
+        .replace(MD_PATTERNS.INLINE_CODE, (match, code) => {
             if (code.includes("\n")) return match;
             const token = _makeToken(TOKEN_INLINE, inlineCodes.length);
             inlineCodes.push(code);
             return token;
         })
         .replace(MD_PATTERNS.HORIZONTAL_LINE, "━".repeat(20))
-        .replace(MD_PATTERNS.HEADING, (match, hashes, content) => {
-            const level = hashes.length;
-            const indent = " ".repeat(Math.max(0, 8 - level * 2));
-            let pureContent = content.trim();
-            const start = pureContent.charAt(0), end = pureContent.charAt(pureContent.length - 1);
-            
-            if ((start === "❪" && end === "❫") || (start === "❮" && end === "❯") || (start === '❬' && end === '❭')) {
-                pureContent = pureContent.substring(1, pureContent.length - 1);
-                return `\n${indent}❰${pureContent}❱\n`;
-            }
-            return `\n${indent}【${content}】\n`;
-        })
+        .replace(MD_PATTERNS.HEADING, _processHeading)
         .replace(MD_PATTERNS.CHECKBOX, (match, spaces, marker, checkState, content) => {
             const level = (spaces.length >> 1);
             const checkbox = (checkState.trim().toLowerCase() === 'x') ? '✔' : '✖';
@@ -237,23 +393,43 @@ function mdToText(markdown) {
             const markers = ["⦁", "￮", "▸", "▹"];
             const bullet = markers[Math.min(level, 3)];
             return " ".repeat(level * 2) + bullet + " " + content;
-        })
-        .replace(MD_PATTERNS.BLOCKQUOTE, (match, quotes, content) => {
-            const level = (quotes.match(/>/g) || []).length;
-            return " ".repeat(level * 2) + "‖ ".repeat(level) + content;
-        })
-        .replace(MD_PATTERNS.BOLD_ITALIC, (match, delimiter, content) => {
-            const converted = _convertToBoldItalicSpecial(content);
-            return _isAllConvertible(content, true) ? converted : `❮${converted}❯`;
-        })
-        .replace(MD_PATTERNS.BOLD, (match, delimiter, content) => {
-            const converted = _convertToBoldSpecial(content);
-            return _isAllConvertible(content, true) ? converted : `❪${converted}❫`;
-        })
-        .replace(MD_PATTERNS.ITALIC, (match, delimiter, content) => {
-            const converted = _convertToItalicSpecial(content);
-            return _isAllConvertible(content, false) ? converted : `❬${converted}❭`;
-        })
+        });
+
+    result = useKakaoMarkdown
+        ? _wrapBlockquotesForKakao(result)
+        : result.replace(MD_PATTERNS.BLOCKQUOTE, _processBlockquote);
+
+    if (useKakaoMarkdown) {
+        result = result
+            .replace(MD_PATTERNS.BOLD_ITALIC, (match, delimiter, content, offset, source) => {
+                const nextChar = source.charAt(offset + match.length);
+                return _formatKakaoEmphasis(delimiter, content, nextChar);
+            })
+            .replace(MD_PATTERNS.BOLD, (match, delimiter, content, offset, source) => {
+                const nextChar = source.charAt(offset + match.length);
+                return _formatKakaoEmphasis(delimiter, content, nextChar);
+            })
+            .replace(MD_PATTERNS.ITALIC, (match, delimiter, content, offset, source) => {
+                const nextChar = source.charAt(offset + match.length);
+                return _formatKakaoEmphasis(delimiter, content, nextChar);
+            });
+    } else {
+        result = result
+            .replace(MD_PATTERNS.BOLD_ITALIC, (match, delimiter, content) => {
+                const converted = _convertToBoldItalicSpecial(content);
+                return _isAllConvertible(content, true) ? converted : `❮${converted}❯`;
+            })
+            .replace(MD_PATTERNS.BOLD, (match, delimiter, content) => {
+                const converted = _convertToBoldSpecial(content);
+                return _isAllConvertible(content, true) ? converted : `❪${converted}❫`;
+            })
+            .replace(MD_PATTERNS.ITALIC, (match, delimiter, content) => {
+                const converted = _convertToItalicSpecial(content);
+                return _isAllConvertible(content, false) ? converted : `❬${converted}❭`;
+            });
+    }
+
+    result = result
         .replace(MD_PATTERNS.STRIKETHROUGH, _processStrikethrough)
         .replace(MD_PATTERNS.TABLE, _processTable);
 
@@ -263,7 +439,7 @@ function mdToText(markdown) {
         if (index === undefined) return match;
     
         if (type === TOKEN_INLINE) {
-            return `⦗ ${inlineCodes[index]} ⦘`;
+            return useKakaoMarkdown ? `\`${inlineCodes[index]}\`` : `⦗ ${inlineCodes[index]} ⦘`;
         }
         if (type === TOKEN_CODE) {
             const obj = codeBlocks[index];
@@ -271,20 +447,10 @@ function mdToText(markdown) {
             const lang = obj.lang;
     
             // 코드블록 내부에 남아있는 (URL/인라인) 토큰 복원
-            const innerCode = obj.code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
-                const idx2 = CHAR_TO_INDEX.get(idxChar2);
-                if (idx2 === undefined) return m2;
+            const innerCode = _restoreCodeTokens(obj.code);
+            const displayCode = useKakaoMarkdown ? _ensureKakaoCodeFence(innerCode) : innerCode;
     
-                if (t2 === TOKEN_INLINE) {
-                    return `⦗ ${inlineCodes[idx2]} ⦘`;
-                }
-                if (t2 === TOKEN_URL) {
-                    return protectedUrls[idx2];
-                }
-                return m2;
-            });
-    
-            return `\n┏${border} ${lang} ${border}┓\n${innerCode}\n┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛\n`;
+            return `\n┏${border} ${lang} ${border}┓\n${displayCode}\n┗${"━".repeat(10 + Math.ceil(lang.length / 2))}┛\n`;
         }
         if (type === TOKEN_URL) {
             return protectedUrls[index];

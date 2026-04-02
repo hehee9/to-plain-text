@@ -1,6 +1,11 @@
 # Changelog
 
 
+## v1.2.0 (2026.04.02)
+### Changed
+- `markdown.js`의 `mdToText()`가 `useKakaoMarkdown`(카카오톡 자체 마크다운 렌더링) 옵션을 지원하도록 확장
+
+
 ## v1.1.3 (2025.12.05)
 ### Fixed
 - `tableToImage.js`에서 인라인 코드 범위 내의 '|' 기호에 의해 테이블 구조가 깨지는 문제 수정
