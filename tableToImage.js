@@ -1,8 +1,9 @@
 /**
  * @description 마크다운 테이블을 이미지로 변환
  * @param {string} markdown 마크다운 테이블
- * @returns {string} 파일 저장 경로
- * 
+ * @param {boolean} [saveAndReturnPath=false] true: 파일 저장 후 경로 반환, false: byte[] 반환
+ * @returns {string|byte[]} 파일 경로 또는 PNG byte[]
+ *
  * @author hehee https://github.com/hehee9
  * @license CC BY-NC-SA 4.0
  * - 저작권자 표기
@@ -25,6 +26,7 @@ const Color = Java.type("android.graphics.Color");
 const Typeface = Java.type("android.graphics.Typeface");
 const File = Java.type("java.io.File");
 const FileOutputStream = Java.type("java.io.FileOutputStream");
+const ByteArrayOutputStream = Java.type("java.io.ByteArrayOutputStream");
 const RectF = Java.type("android.graphics.RectF");
 const Jsoup = Java.type("org.jsoup.Jsoup");
 const Base64 = Java.type("android.util.Base64");
@@ -76,6 +78,11 @@ const RE_BASE64_PREFIX = /^base64[:|,]/;
 const IMG_CACHE = new Map();
 
 
+const BASE_ASPECT_RATIO = 2.5;  // 기본 최대 비율 (5:2)
+const MAX_ASPECT_RATIO = 5.0;   // 허용 가능한 최대 비율 (10:2)
+const MIN_CELL_WIDTH = 200;     // 최소 셀 폭
+
+
 
 
 /* =================================== 유틸/헬퍼 =================================== */
@@ -94,12 +101,22 @@ function _tokenizeRow(line) {
     for (let i = 0; i < s.length; i++) {
         const ch = s.charAt(i);
 
-        // 코드 밖의 이스케이프 처리
+        // 코드 밖에서는 셀 구분자 escape만 소비하고 LaTeX 명령 백슬래시는 보존
         if (!code && ch === "\\") {
             if (i + 1 < s.length) {
-                buf += s.charAt(i + 1);
-                i += 1;
-                continue;
+                const next = s.charAt(i + 1);
+                if (next === "|" || next === "\\") {
+                    if (next === "\\" && i + 2 < s.length && /[A-Za-z()[\]{}]/.test(s.charAt(i + 2))) {
+                        buf += "\\";
+                        i += 1;
+                        continue;
+                    }
+                    if (next === "|") {
+                        buf += next;
+                        i += 1;
+                        continue;
+                    }
+                }
             }
             buf += "\\";
             continue;
@@ -168,6 +185,30 @@ function _parseAlign(token) {
     if (starts) return "left";
     return "left";
 }
+/** @description 문자 위치가 백슬래시로 이스케이프되었는지 확인 */
+function _isEscapedAt(source, index) {
+    let count = 0;
+    for (let i = index - 1; i >= 0 && source.charAt(i) === "\\"; i--) count++;
+    return count % 2 === 1;
+}
+/** @description 닫힘 수식 구분자 검색 */
+function _findLatexClose(source, start, closeToken, allowNewline) {
+    for (let i = start; i < source.length; i++) {
+        if (!allowNewline && source.charAt(i) === "\n") return -1;
+        if (source.startsWith(closeToken, i) && !_isEscapedAt(source, i)) return i;
+    }
+    return -1;
+}
+/** @description LaTeX 이미지 run 생성 */
+function _makeLatexImageRun(tex, display) {
+    const trimmed = String(tex || "").trim();
+    if (!trimmed) return null;
+    const formula = display
+        ? "\\dpi{200} \\bg_white \\displaystyle " + trimmed
+        : "\\dpi{200}\\bg{white}" + trimmed;
+    const url = "https://latex.codecogs.com/png.latex?" + URLEncoder.encode(formula, "UTF-8");
+    return { image: true, src: url, alt: trimmed };
+}
 /**
  * @description 인라인 변환(볼드/이탤릭/취소선/인라인 코드/LaTeX)
  * @param {string} line
@@ -206,40 +247,45 @@ function _parseInlineMdToRuns(line) {
 
         // LaTeX 토큰 처리 (추가) - 코드 블록(`) 바깥에서만
         if (!code) {
+            // \(...\), \[...\]
+            if ((s.startsWith("\\(", i) || s.startsWith("\\[", i)) && !_isEscapedAt(s, i)) {
+                const closeToken = s.startsWith("\\(", i) ? "\\)" : "\\]";
+                const end = _findLatexClose(s, i + 2, closeToken, closeToken === "\\]");
+                if (end > i + 2) {
+                    const run = _makeLatexImageRun(s.slice(i + 2, end), closeToken === "\\]");
+                    if (run) {
+                        _flush();
+                        runs.push(run);
+                        i = end + 2;
+                        continue;
+                    }
+                }
+            }
             // $$...$$ (display math)
             if (s.startsWith("$$", i)) {
-                const end = s.indexOf("$$", i + 2);
+                const end = _findLatexClose(s, i + 2, "$$", true);
                 if (end > i + 2) {
-                    const tex = s.slice(i + 2, end).trim();
-                    _flush();
-                    const formula = "\\dpi{200} \\bg_white \\displaystyle " + tex;
-                    const url = "https://latex.codecogs.com/png.latex?" + URLEncoder.encode(formula, "UTF-8");
-                    runs.push({ image: true, src: url, alt: tex });
-                    i = end + 2;
-                    continue;
+                    const run = _makeLatexImageRun(s.slice(i + 2, end), true);
+                    if (run) {
+                        _flush();
+                        runs.push(run);
+                        i = end + 2;
+                        continue;
+                    }
                 }
             }
             // $...$ (inline math)
-            if (ch === "$") {
+            if (ch === "$" && !_isEscapedAt(s, i)) {
                 // 이스케이프되지 않은 닫힘 '$' 찾기
-                let j = i + 1, end = -1;
-                while (true) {
-                    j = s.indexOf("$", j);
-                    if (j < 0) break;
-                    // 직전 백슬래시 개수로 이스케이프 여부 판단
-                    let bs = 0;
-                    for (let k = j - 1; k >= 0 && s.charAt(k) === "\\"; k--) bs++;
-                    if (bs % 2 === 0) { end = j; break; }
-                    j = j + 1;
-                }
+                let end = _findLatexClose(s, i + 1, "$", false);
                 if (end > i) {
-                    const tex = s.slice(i + 1, end).trim();
-                    _flush();
-                    const formula = "\\dpi{200} \\bg_white " + tex;
-                    const url = "https://latex.codecogs.com/png.latex?" + URLEncoder.encode(formula, "UTF-8");
-                    runs.push({ image: true, src: url, alt: tex });
-                    i = end + 1;
-                    continue;
+                    const run = _makeLatexImageRun(s.slice(i + 1, end), false);
+                    if (run) {
+                        _flush();
+                        runs.push(run);
+                        i = end + 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -271,46 +317,201 @@ function _parseInlineMdToRuns(line) {
     if (runs.length === 0) runs.push({ text: "", bold: false, italic: false, strike: false });
     return runs;
 }
+function _isTextRun(run) {
+    return run && run.image !== true;
+}
+function _isWhitespaceText(text) {
+    return /^[\s]+$/.test(text || "");
+}
+function _splitWrapTokens(text) {
+    return (text || "").match(/\s+|[^\s]+/g) || [];
+}
+function _sameTextStyle(a, b) {
+    return _isTextRun(a) && _isTextRun(b) &&
+           a.bold === b.bold &&
+           a.italic === b.italic &&
+           a.strike === b.strike &&
+           a.code === b.code;
+}
+function _makeTextRun(run, text) {
+    return {
+        text,
+        bold: run.bold,
+        italic: run.italic,
+        strike: run.strike,
+        code: run.code
+    };
+}
+function _measureTextSegment(run, text, paint, isHeader, isNewRun) {
+    if (!text) return 0;
+    paint.setTypeface(_getTypefaceFor(isHeader, run));
+    const pad = (isNewRun && run.code === true) ? CODE_PAD_X * 2 : 0;
+    return paint.measureText(text) + pad;
+}
+function _trimWrappedLine(line) {
+    const trimmed = line.slice();
+
+    while (trimmed.length > 0) {
+        const first = trimmed[0];
+        if (!_isTextRun(first) || first.code === true) break;
+        first.text = (first.text || "").replace(/^\s+/, "");
+        if (first.text.length > 0) break;
+        trimmed.shift();
+    }
+
+    while (trimmed.length > 0) {
+        const last = trimmed[trimmed.length - 1];
+        if (!_isTextRun(last) || last.code === true) break;
+        last.text = (last.text || "").replace(/\s+$/, "");
+        if (last.text.length > 0) break;
+        trimmed.pop();
+    }
+
+    return trimmed;
+}
+function _appendTextSegment(line, run, text, paint, isHeader) {
+    if (!text) return 0;
+    const last = line.length > 0 ? line[line.length - 1] : null;
+    const merge = last && _sameTextStyle(last, run);
+    const width = _measureTextSegment(run, text, paint, isHeader, !merge);
+    if (merge) last.text += text;
+    else line.push(_makeTextRun(run, text));
+    return width;
+}
+function _maxUnbreakableTextWidth(text, run, paint, isHeader) {
+    let maxW = 0;
+    const tokens = _splitWrapTokens(text);
+    for (let token of tokens) {
+        if (_isWhitespaceText(token)) continue;
+        maxW = Math.max(maxW, _measureTextSegment(run, token, paint, isHeader, true));
+    }
+    return Math.ceil(maxW);
+}
+function _maxUnbreakableLineWidth(line, paint, isHeader) {
+    let maxW = 0;
+    for (let run of line.runs || []) {
+        if (run.image === true) {
+            maxW = Math.max(maxW, run._w || 0);
+            continue;
+        }
+        maxW = Math.max(maxW, _maxUnbreakableTextWidth(run.text || "", run, paint, isHeader));
+    }
+    return Math.ceil(maxW);
+}
+/**
+ * @description runs 배열을 maxWidth에 맞게 공백/단어 우선으로 워드랩
+ * @param {object[]} runs 텍스트/이미지 runs 배열
+ * @param {number} maxWidth 최대 폭 (px)
+ * @param {Paint} paint 측정용 Paint
+ * @param {boolean} isHeader 헤더 여부
+ * @returns {object[][]} 줄별 runs 배열
+ */
+function _wrapRuns(runs, maxWidth, paint, isHeader) {
+    if (!runs || runs.length === 0 || maxWidth <= 0) {
+        return [runs];
+    }
+
+    const wrappedLines = [];
+    let currentLine = [];
+    let currentLineW = 0;
+
+    const pushCurrentLine = () => {
+        const trimmed = _trimWrappedLine(currentLine);
+        if (trimmed.length > 0) wrappedLines.push(trimmed);
+        currentLine = [];
+        currentLineW = 0;
+    };
+
+    const addByChars = (run, text) => {
+        for (let i = 0; i < text.length; i++) {
+            const ch = text.charAt(i);
+            if (!run.code && _isWhitespaceText(ch) && currentLine.length === 0) continue;
+
+            const last = currentLine.length > 0 ? currentLine[currentLine.length - 1] : null;
+            const merge = last && _sameTextStyle(last, run);
+            const chW = _measureTextSegment(run, ch, paint, isHeader, !merge);
+
+            if (currentLineW > 0 && currentLineW + chW > maxWidth) {
+                pushCurrentLine();
+                if (!run.code && _isWhitespaceText(ch)) continue;
+            }
+
+            currentLineW += _appendTextSegment(currentLine, run, ch, paint, isHeader);
+        }
+    };
+
+    for (let run of runs) {
+        // 이미지는 워드랩 불가 - 줄 안에 들어가지 않으면 다음 줄로 이동
+        if (run.image === true) {
+            const imgW = run._w || 0;
+            if (currentLineW > 0 && currentLineW + imgW > maxWidth) pushCurrentLine();
+            currentLine.push(run);
+            currentLineW += imgW;
+            continue;
+        }
+
+        const text = run.text || "";
+        if (text.length === 0) continue;
+
+        const tokens = _splitWrapTokens(text);
+        for (let token of tokens) {
+            const isSpace = _isWhitespaceText(token);
+            if (!run.code && isSpace && currentLine.length === 0) continue;
+
+            const last = currentLine.length > 0 ? currentLine[currentLine.length - 1] : null;
+            const merge = last && _sameTextStyle(last, run);
+            const tokenW = _measureTextSegment(run, token, paint, isHeader, !merge);
+
+            if (!isSpace && tokenW > maxWidth) {
+                if (currentLineW > 0) pushCurrentLine();
+                addByChars(run, token);
+                continue;
+            }
+
+            if (currentLineW > 0 && currentLineW + tokenW > maxWidth) {
+                pushCurrentLine();
+                if (!run.code && isSpace) continue;
+            }
+
+            currentLineW += _appendTextSegment(currentLine, run, token, paint, isHeader);
+        }
+    }
+
+    if (currentLine.length > 0) pushCurrentLine();
+
+    if (wrappedLines.length === 0) {
+        return [[{ text: "", bold: false, italic: false, strike: false }]];
+    }
+
+    return wrappedLines;
+}
 /**
  * @description 한 셀을 레이아웃으로 변환
  * @param {string} text
  * @param {boolean} isHeader
  * @param {Paint} paint
+ * @param {object} fm FontMetrics
+ * @param {number} [maxCellWidth=0] 최대 셀 폭 (0이면 워드랩 없음)
  * @return {object} { lines: {runs: object[], width: number}[], maxWidth: number, lineCount: number }
  */
-function _layoutCell(text, isHeader, paint, fm) {
+function _layoutCell(text, isHeader, paint, fm, maxCellWidth = 0) {
     const rawLines = _normalizeBr(text).split("\n");
     const unitH = (fm.descent - fm.ascent);
 
     let lines = [];
     let maxW = 0;
 
-    for (let raw of rawLines) {
-        let runs = _parseInlineMdToRuns(raw);
-
-        const onlyImages = runs.length > 0 && runs.every(r => r.image === true);
-
-        let units = 1;
-        if (onlyImages) {
-            let maxSrcH = 0;
-            for (let r of runs) {
-                const info = _getImageInfo(r.src);
-                r._imgInfo = info;
-                if (info?.h > maxSrcH) maxSrcH = info.h;
-            }
-            if (maxSrcH > 0) {
-                if (maxSrcH <= 128) units = 1;
-                if (maxSrcH <= 400) units = 2;
-                else if (maxSrcH <= 876) units = 3;
-                else if (maxSrcH <= 1600) units = 4;
-                else units = 5;
-            }
-        }
-
+    /**
+     * @description runs 배열의 폭 계산 (이미지 스케일링 포함)
+     * @param {object[]} runs
+     * @param {number} units 이미지 높이 단위
+     * @param {boolean} onlyImages 이미지만 있는 줄인지
+     * @returns {{width: number, hasContent: boolean}}
+     */
+    const calcRunsWidth = (runs, units, onlyImages) => {
         let width = 0;
         let hasContent = false;
 
-        // 폭 계산 및 이미지 스케일
         for (let run of runs) {
             if (run.image === true) {
                 const info = run._imgInfo || _getImageInfo(run.src);
@@ -345,14 +546,57 @@ function _layoutCell(text, isHeader, paint, fm) {
             }
         }
 
-        width = Math.ceil(width);
-        maxW = Math.max(maxW, width);
+        return { width: Math.ceil(width), hasContent };
+    };
 
-        lines.push({
-            runs: hasContent ? runs : [{ text: "", bold: false, italic: false, strike: false }],
-            width,
-            units
-        });
+    for (let raw of rawLines) {
+        let runs = _parseInlineMdToRuns(raw);
+
+        const onlyImages = runs.length > 0 && runs.every(r => r.image === true);
+
+        let units = 1;
+        if (onlyImages) {
+            let maxSrcH = 0;
+            for (let r of runs) {
+                const info = _getImageInfo(r.src);
+                r._imgInfo = info;
+                if (info?.h > maxSrcH) maxSrcH = info.h;
+            }
+            if (maxSrcH > 0) {
+                if (maxSrcH <= 128) units = 1;
+                if (maxSrcH <= 400) units = 2;
+                else if (maxSrcH <= 876) units = 3;
+                else if (maxSrcH <= 1600) units = 4;
+                else units = 5;
+            }
+        }
+
+        // 이미지 스케일링을 위해 먼저 한번 계산 (이미지의 _w 값 설정)
+        calcRunsWidth(runs, units, onlyImages);
+
+        // 워드랩 적용 여부 결정
+        if (maxCellWidth > 0 && !onlyImages) {
+            // 워드랩 적용
+            const wrappedLines = _wrapRuns(runs, maxCellWidth, paint, isHeader);
+            for (let wrappedRuns of wrappedLines) {
+                const { width, hasContent } = calcRunsWidth(wrappedRuns, 1, false);
+                maxW = Math.max(maxW, width);
+                lines.push({
+                    runs: hasContent ? wrappedRuns : [{ text: "", bold: false, italic: false, strike: false }],
+                    width,
+                    units: 1
+                });
+            }
+        } else {
+            // 워드랩 없음 (기존 동작)
+            const { width, hasContent } = calcRunsWidth(runs, units, onlyImages);
+            maxW = Math.max(maxW, width);
+            lines.push({
+                runs: hasContent ? runs : [{ text: "", bold: false, italic: false, strike: false }],
+                width,
+                units
+            });
+        }
     }
 
     const unitsTotal = lines.reduce((acc, l) => acc + (l.units || 1), 0);
@@ -493,15 +737,17 @@ function parseMarkdownTable(table) {
 }
 
 /**
- * @description Markdown 테이블을 이미지로 저장 후 경로 반환
- * @param {string} table
- * @return {string}
+ * @description Markdown 테이블을 이미지로 변환
+ * @param {string} table 마크다운 테이블 문자열
+ * @param {boolean} [saveAndReturnPath=false] true: 파일 저장 후 경로 반환, false: byte[] 반환
+ * @return {string|byte[]} 파일 경로 또는 PNG byte[]
  */
-function tableToImage(table) {
+function tableToImage(table, saveAndReturnPath = false) {
     const marginX = 24, marginY = 24;
     const cellPadX = 16, cellPadY = 10;
     const bodyTextSize = 36, headerTextSize = 36;
     const gridStroke = 2;
+    let bitmap = null;
 
     try {
         const { header, align, body } = parseMarkdownTable(table);
@@ -531,52 +777,227 @@ function tableToImage(table) {
         const hfm = headerPaint.getFontMetrics();
         const bfm = bodyPaint.getFontMetrics();
 
-        const headerLayouts = new Array(cols);
-        for (let c = 0; c < cols; c++) headerLayouts[c] = _layoutCell(header[c] || "", true, headerPaint, hfm);
+        /**
+         * @description 모든 셀 레이아웃 수행
+         * @param {number} maxCellWidth 최대 셀 폭 (0이면 워드랩 없음)
+         * @returns {{headerLayouts: object[], bodyLayouts: object[][]}}
+         */
+        const layoutAllCells = (maxCellWidth = 0) => {
+            const hLayouts = new Array(cols);
+            for (let c = 0; c < cols; c++) {
+                hLayouts[c] = _layoutCell(header[c] || "", true, headerPaint, hfm, maxCellWidth);
+            }
 
-        const bodyLayouts = new Array(rows);
-        for (let r = 0; r < rows; r++) {
-            bodyLayouts[r] = new Array(cols);
-            for (let c = 0; c < cols; c++) bodyLayouts[r][c] = _layoutCell(body[r][c] || "", false, bodyPaint, bfm);
+            const bLayouts = new Array(rows);
+            for (let r = 0; r < rows; r++) {
+                bLayouts[r] = new Array(cols);
+                for (let c = 0; c < cols; c++) {
+                    bLayouts[r][c] = _layoutCell(body[r][c] || "", false, bodyPaint, bfm, maxCellWidth);
+                }
+            }
+
+            return { headerLayouts: hLayouts, bodyLayouts: bLayouts };
+        };
+
+        /**
+         * @description 레이아웃에서 테이블 크기 계산
+         * @param {object[]} hLayouts
+         * @param {object[][]} bLayouts
+         * @returns {{colWidths: number[], tableW: number, tableH: number, headerRowH: number, bodyRowHeights: number[]}}
+         */
+        const calcTableSize = (hLayouts, bLayouts) => {
+            // 컬럼 너비
+            const cWidths = new Array(cols).fill(0);
+            for (let c = 0; c < cols; c++) {
+                let maxW = hLayouts[c].maxWidth;
+                for (let r = 0; r < rows; r++) {
+                    if (bLayouts[r][c].maxWidth > maxW) maxW = bLayouts[r][c].maxWidth;
+                }
+                cWidths[c] = Math.ceil(maxW + cellPadX * 2);
+            }
+
+            // 행 높이
+            const headerLineH = (hfm.descent - hfm.ascent);
+            const bodyLineH = (bfm.descent - bfm.ascent);
+
+            let headerMaxUnits = 1;
+            for (let c = 0; c < cols; c++) {
+                const u = hLayouts[c].unitsTotal || hLayouts[c].lineCount;
+                if (u > headerMaxUnits) headerMaxUnits = u;
+            }
+            const hRowH = Math.ceil(headerMaxUnits * headerLineH + cellPadY * 2);
+
+            const bRowHeights = new Array(rows);
+            for (let r = 0; r < rows; r++) {
+                let maxUnits = 1;
+                for (let c = 0; c < cols; c++) {
+                    const u = bLayouts[r][c].unitsTotal || bLayouts[r][c].lineCount;
+                    if (u > maxUnits) maxUnits = u;
+                }
+                bRowHeights[r] = Math.ceil(maxUnits * bodyLineH + cellPadY * 2);
+            }
+
+            const tW = cWidths.reduce((a, b) => a + b, 0);
+            const bodyTotalH = bRowHeights.reduce((a, b) => a + b, 0);
+            const tH = hRowH + bodyTotalH;
+
+            return { colWidths: cWidths, tableW: tW, tableH: tH, headerRowH: hRowH, bodyRowHeights: bRowHeights };
+        };
+
+        /**
+         * @description 원본 레이아웃에서 열별 자연 폭과 최소 권장 폭 계산
+         * @param {object[]} origHLayouts 원본 헤더 레이아웃
+         * @param {object[][]} origBLayouts 원본 바디 레이아웃
+         * @returns {{naturalColWidths: number[], minColWidths: number[]}}
+         */
+        const getColumnWidthBounds = (origHLayouts, origBLayouts) => {
+            const naturalColWidths = new Array(cols).fill(0);
+            const minColWidths = new Array(cols).fill(0);
+
+            for (let c = 0; c < cols; c++) {
+                let naturalContentW = origHLayouts[c].maxWidth || 0;
+                let minContentW = 0;
+
+                for (let line of origHLayouts[c].lines || []) {
+                    minContentW = Math.max(minContentW, _maxUnbreakableLineWidth(line, headerPaint, true));
+                }
+
+                for (let r = 0; r < rows; r++) {
+                    const layout = origBLayouts[r][c];
+                    naturalContentW = Math.max(naturalContentW, layout.maxWidth || 0);
+                    for (let line of layout.lines || []) {
+                        minContentW = Math.max(minContentW, _maxUnbreakableLineWidth(line, bodyPaint, false));
+                    }
+                }
+
+                naturalColWidths[c] = Math.ceil(naturalContentW + cellPadX * 2);
+                minColWidths[c] = Math.ceil(Math.max(MIN_CELL_WIDTH, minContentW) + cellPadX * 2);
+                if (minColWidths[c] > naturalColWidths[c]) minColWidths[c] = naturalColWidths[c];
+            }
+
+            return { naturalColWidths, minColWidths };
+        };
+
+        /**
+         * @description 목표 테이블 폭에 맞게 열별 폭을 자연 폭과 최소 폭 사이에서 배분
+         * @param {number[]} naturalColWidths 열별 자연 폭
+         * @param {number[]} minColWidths 열별 최소 권장 폭
+         * @param {number} targetTableW 목표 테이블 폭
+         * @returns {number[]} 열별 배분 폭
+         */
+        const distributeColumnWidths = (naturalColWidths, minColWidths, targetTableW) => {
+            const naturalTotal = naturalColWidths.reduce((a, b) => a + b, 0);
+            const minTotal = minColWidths.reduce((a, b) => a + b, 0);
+
+            if (targetTableW >= naturalTotal) return naturalColWidths.slice();
+            if (targetTableW <= minTotal) return minColWidths.slice();
+
+            const flexibleTotal = naturalTotal - minTotal;
+            const keepRatio = (targetTableW - minTotal) / flexibleTotal;
+            const widths = new Array(cols);
+            let assigned = 0;
+
+            for (let c = 0; c < cols; c++) {
+                widths[c] = Math.floor(minColWidths[c] + (naturalColWidths[c] - minColWidths[c]) * keepRatio);
+                assigned += widths[c];
+            }
+
+            let remainder = Math.round(targetTableW - assigned);
+            for (let c = 0; remainder > 0 && c < cols; c++) {
+                if (widths[c] < naturalColWidths[c]) {
+                    widths[c]++;
+                    remainder--;
+                }
+            }
+
+            return widths;
+        };
+
+        /**
+         * @description 열별 최대 셀 폭으로 재레이아웃
+         * @param {number[]} wrapColWidths 열별 전체 폭(패딩 포함)
+         * @returns {{headerLayouts: object[], bodyLayouts: object[][]}}
+         */
+        const layoutWithColumnWidths = (wrapColWidths) => {
+            const hLayouts = new Array(cols);
+            for (let c = 0; c < cols; c++) {
+                const maxCellWidth = Math.max(1, Math.floor(wrapColWidths[c] - cellPadX * 2));
+                hLayouts[c] = _layoutCell(header[c] || "", true, headerPaint, hfm, maxCellWidth);
+            }
+
+            const bLayouts = new Array(rows);
+            for (let r = 0; r < rows; r++) {
+                bLayouts[r] = new Array(cols);
+                for (let c = 0; c < cols; c++) {
+                    const maxCellWidth = Math.max(1, Math.floor(wrapColWidths[c] - cellPadX * 2));
+                    bLayouts[r][c] = _layoutCell(body[r][c] || "", false, bodyPaint, bfm, maxCellWidth);
+                }
+            }
+
+            return { headerLayouts: hLayouts, bodyLayouts: bLayouts };
+        };
+
+        // 1패스: 워드랩 없이 레이아웃
+        let { headerLayouts, bodyLayouts } = layoutAllCells(0);
+        let { colWidths, tableW, tableH, headerRowH, bodyRowHeights } = calcTableSize(headerLayouts, bodyLayouts);
+
+        // 비율 체크 및 2패스 워드랩
+        const totalRows = rows + 1; // 헤더 포함
+        const colRowRatio = cols / totalRows;
+        const allowedRatio = Math.min(MAX_ASPECT_RATIO, Math.max(BASE_ASPECT_RATIO, colRowRatio));
+        const aspectRatio = tableW / tableH;
+
+        if (aspectRatio > allowedRatio) {
+            const bounds = getColumnWidthBounds(headerLayouts, bodyLayouts);
+            const naturalTotal = bounds.naturalColWidths.reduce((a, b) => a + b, 0);
+            const minTotal = bounds.minColWidths.reduce((a, b) => a + b, 0);
+
+            let low = minTotal;
+            let high = naturalTotal;
+            let bestLayouts = null;
+            let bestSize = null;
+
+            // 줄바꿈 후에는 높이가 증가하므로, 최종 비율 기준으로 가장 넓게 들어맞는 폭을 찾는다.
+            for (let i = 0; i < 7; i++) {
+                const mid = (low + high) / 2;
+                const wrapColWidths = distributeColumnWidths(bounds.naturalColWidths, bounds.minColWidths, mid);
+                const relayout = layoutWithColumnWidths(wrapColWidths);
+                const resized = calcTableSize(relayout.headerLayouts, relayout.bodyLayouts);
+                const resizedRatio = resized.tableW / resized.tableH;
+
+                if (resizedRatio > allowedRatio) {
+                    high = mid;
+                } else {
+                    bestLayouts = relayout;
+                    bestSize = resized;
+                    low = mid;
+                }
+            }
+
+            if (bestLayouts === null) {
+                const wrapColWidths = distributeColumnWidths(bounds.naturalColWidths, bounds.minColWidths, minTotal);
+                bestLayouts = layoutWithColumnWidths(wrapColWidths);
+                bestSize = calcTableSize(bestLayouts.headerLayouts, bestLayouts.bodyLayouts);
+            }
+
+            headerLayouts = bestLayouts.headerLayouts;
+            bodyLayouts = bestLayouts.bodyLayouts;
+            colWidths = bestSize.colWidths;
+            tableW = bestSize.tableW;
+            tableH = bestSize.tableH;
+            headerRowH = bestSize.headerRowH;
+            bodyRowHeights = bestSize.bodyRowHeights;
         }
 
-        // 컬럼 너비
-        const colWidths = new Array(cols).fill(0);
-        for (let c = 0; c < cols; c++) {
-            let maxW = headerLayouts[c].maxWidth;
-            for (let r = 0; r < rows; r++) if (bodyLayouts[r][c].maxWidth > maxW) maxW = bodyLayouts[r][c].maxWidth;
-            colWidths[c] = Math.ceil(maxW + cellPadX * 2);
-        }
-
-        // 행 높이
+        // 렌더링용 라인 높이
         const headerLineH = (hfm.descent - hfm.ascent);
         const bodyLineH = (bfm.descent - bfm.ascent);
 
-        let headerMaxUnits = 1;
-        for (let c = 0; c < cols; c++) {
-            const u = headerLayouts[c].unitsTotal || headerLayouts[c].lineCount;
-            if (u > headerMaxUnits) headerMaxUnits = u;
-        }
-        const headerRowH = Math.ceil(headerMaxUnits * headerLineH + cellPadY * 2);
-
-        const bodyRowHeights = new Array(rows);
-        for (let r = 0; r < rows; r++) {
-            let maxUnits = 1;
-            for (let c = 0; c < cols; c++) {
-                const u = bodyLayouts[r][c].unitsTotal || bodyLayouts[r][c].lineCount;
-                if (u > maxUnits) maxUnits = u;
-            }
-            bodyRowHeights[r] = Math.ceil(maxUnits * bodyLineH + cellPadY * 2);
-        }
-
-        // 크기/좌표
-        const tableW = colWidths.reduce((a, b) => a + b, 0);
-        const bodyTotalH = bodyRowHeights.reduce((a, b) => a + b, 0);
-        const tableH = headerRowH + bodyTotalH;
+        // 비트맵 크기
         const bmpW = Math.ceil(marginX * 2 + tableW);
         const bmpH = Math.ceil(marginY * 2 + tableH);
 
-        const bitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
+        bitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
         const canvas = new Canvas(bitmap);
         canvas.drawColor(Color.WHITE);
 
@@ -699,29 +1120,44 @@ function tableToImage(table) {
         }
         bodyPaint.setStrikeThruText(false);
 
-        // 저장
-        const baseDir = `sdcard/msgbot_media/tableToImage`;
-        FileStream.createDir(baseDir);
-        const filePath = `${baseDir}/${Security.uuidv7()}.png`;
+        // 출력
+        let result;
+        if (saveAndReturnPath) {
+            // 파일로 저장 후 경로 반환
+            const baseDir = `sdcard/msgbot_media/tableToImage`;
+            FileStream.createDir(baseDir);
+            const filePath = `${baseDir}/${Security.uuidv7()}.png`;
 
-        let fos = null;
-        try {
-            fos = new FileOutputStream(new File(filePath));
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
-            fos.flush();
-        } finally {
-            if (fos !== null) fos.close();
-            bitmap.recycle();
-
-            for (let [, info] of IMG_CACHE) {
-                if (info.bmp && !info.bmp.isRecycled()) info.bmp.recycle();
+            let fos = null;
+            try {
+                fos = new FileOutputStream(new File(filePath));
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                fos.flush();
+            } finally {
+                if (fos !== null) fos.close();
             }
-            IMG_CACHE.clear();
+            result = filePath;
+        } else {
+            // byte[] 반환
+            const baos = new ByteArrayOutputStream();
+            try {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos);
+                result = baos.toByteArray();
+            } finally {
+                baos.close();
+            }
         }
-        return filePath;
+
+        return result;
     } catch (e) {
         Log.e(`${e.name}\n${e.message}\n${e.stack}`);
         throw e;
+    } finally {
+        if (bitmap !== null && !bitmap.isRecycled()) bitmap.recycle();
+        for (let [, info] of IMG_CACHE) {
+            if (info.bmp && !info.bmp.isRecycled()) info.bmp.recycle();
+        }
+        IMG_CACHE.clear();
     }
 }
 

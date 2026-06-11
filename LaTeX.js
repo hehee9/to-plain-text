@@ -36,7 +36,7 @@ const superscriptsMap = new Map([
 const subscriptsMap = new Map([
     ['0', '₀'], ['1', '₁'], ['2', '₂'], ['3', '₃'], ['4', '₄'],
     ['5', '₅'], ['6', '₆'], ['7', '₇'], ['8', '₈'], ['9', '₉'],
-    ['a', 'ₐ'], ['e', 'ₑ'], ['h', 'ₕ'], ['i', 'ᵢ'], ['j', 'ⱼ'],
+    ['a', 'ₐ'], ['b', 'ᵦ'], ['e', 'ₑ'], ['h', 'ₕ'], ['i', 'ᵢ'], ['j', 'ⱼ'],
     ['k', 'ₖ'], ['l', 'ₗ'], ['m', 'ₘ'], ['n', 'ₙ'], ['o', 'ₒ'],
     ['p', 'ₚ'], ['r', 'ᵣ'], ['s', 'ₛ'], ['t', 'ₜ'], ['u', 'ᵤ'],
     ['v', 'ᵥ'], ['x', 'ₓ'],
@@ -222,7 +222,7 @@ const spaces = new Map([
 
 // 정규식 사전 컴파일
 const RE_CODE_BLOCK = /```(.*?)\n([\s\S]*?)```/g;
-const RE_LATEX_CHECK = /\$[^$]|\\\[|\\\(|\\[a-zA-Z]{2,}|\\begin/;
+const RE_LATEX_COMMAND_CHECK = /\\\[|\\\(|\\[a-zA-Z]{2,}|\\begin/;
 const RE_BOXED = /\\boxed\{([^}]+)\}/g;
 const RE_TEXTCIRCLED = /\\textcircled\{([^}]+)\}/g;
 const RE_DELIMITERS = /\\(?:left|right|middle)(?:\\[{}]|\(|\)|\[|\]|\|)|\\[lr]Vert/g;
@@ -262,6 +262,7 @@ const RE_FONT_MATHBF = /\\mathbf\{([^}]+)\}/g;
 const RE_FONT_MATHBB = /\\mathbb\{([^}]+)\}/g;
 const RE_FONT_MATHCAL = /\\mathcal\{([^}]+)\}/g;
 const RE_FONT_MATHFRAK = /\\mathfrak\{([^}]+)\}/g;
+const RE_CODE_BLOCK_TOKEN = /⟦𪚥CB(\d+)𪚥⟧/g;
 
 const TOKEN_START = "⟦𪚥";
 const TOKEN_END = "𪚥⟧";
@@ -286,6 +287,127 @@ function _convertFont(content, fontMap) {
     for (let i = 0; i < content.length; i++) {
         result += fontMap.get(content[i]) || content[i];
     }
+    return result;
+}
+
+function _looksLikeNaturalLanguage(content) {
+    if (!content) return false;
+    if (/[가-힣]/.test(content)) return true;
+
+    const compact = content.trim();
+    if (!compact) return false;
+
+    const words = compact.match(/[A-Za-z]+/g) || [];
+    const meaningfulWords = [];
+    for (let i = 0; i < words.length; i++) {
+        if (words[i].length >= 2) {
+            meaningfulWords.push(words[i]);
+        }
+    }
+
+    if (meaningfulWords.length >= 3) return true;
+    if (meaningfulWords.length >= 2 && compact.includes(" ")) return true;
+    return false;
+}
+
+function _hasInlineMathOperator(content) {
+    if (!content) return false;
+
+    for (let i = 0; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === '+' || ch === '*' || ch === '/' || ch === '=' || ch === '<' || ch === '>' || ch === '^' || ch === '_') {
+            return true;
+        }
+        if (ch === '-' && i > 0 && i < content.length - 1) {
+            return true;
+        }
+    }
+    return /[≤≥≈≠]/.test(content);
+}
+
+function _isLikelyInlineMath(content) {
+    const source = String(content || "").trim();
+    if (!source) return false;
+    if (source.length > 120) return false;
+
+    if (/\\(?:[A-Za-z]{2,}|[\[\](){}])/g.test(source)) return true;
+    if (source.includes("\\left") || source.includes("\\right") || source.includes("\\begin")) return true;
+    if (_hasInlineMathOperator(source)) return true;
+    if (/[()[\]{}]/.test(source) && /[A-Za-z0-9]/.test(source)) return true;
+    if (_looksLikeNaturalLanguage(source)) return false;
+    if (/^\d+(?:\.\d+)?$/.test(source)) return false;
+    if (/^\d+(?:\.\d+)?[A-Za-z가-힣]+/.test(source)) return false;
+    if (/^[A-Za-z](?:[A-Za-z0-9]{0,7})?$/.test(source)) return true;
+    return false;
+}
+
+function _hasConvertibleInlineMath(text) {
+    if (!text || text.indexOf('$') === -1) return false;
+
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '$') continue;
+
+        const maxEnd = Math.min(text.length, i + 122);
+        for (let j = i + 1; j < maxEnd; j++) {
+            const ch = text[j];
+            if (ch === '\n') break;
+            if (ch !== '$') continue;
+            if (_isLikelyInlineMath(text.slice(i + 1, j))) {
+                return true;
+            }
+            break;
+        }
+    }
+
+    return false;
+}
+
+function _restoreCodeBlocks(text, codeBlocks) {
+    if (!text || !codeBlocks || codeBlocks.length === 0) return text;
+
+    return text.replace(RE_CODE_BLOCK_TOKEN, (match, indexStr) => {
+        const block = codeBlocks[Number(indexStr)];
+        if (!block) return match;
+        return `\n\`\`\`${block.lang}\n${block.code}\n\`\`\``;
+    });
+}
+
+function _replaceInlineMathSegments(text) {
+    if (!text || text.indexOf('$') === -1) return text;
+
+    let result = '';
+    let index = 0;
+    while (index < text.length) {
+        if (text[index] !== '$') {
+            result += text[index];
+            index += 1;
+            continue;
+        }
+
+        let converted = false;
+        const maxEnd = Math.min(text.length, index + 122);
+        for (let cursor = index + 1; cursor < maxEnd; cursor++) {
+            const ch = text[cursor];
+            if (ch === '\n') break;
+            if (ch !== '$') continue;
+
+            const candidate = text.slice(index + 1, cursor);
+            if (!_isLikelyInlineMath(candidate)) {
+                break;
+            }
+
+            result += _processLatexSegment(candidate);
+            index = cursor + 1;
+            converted = true;
+            break;
+        }
+
+        if (!converted) {
+            result += '$';
+            index += 1;
+        }
+    }
+
     return result;
 }
 
@@ -444,11 +566,11 @@ function _convertMath(math) {
     result = utils._convertSpaces(result);
     result = utils._convertLimits(result);
     result = utils._convertCases(result);
-    
+
     if (!hasBegin && result.includes('\\begin{')) {
         result = utils._convertMatrices(result);
     }
-    
+
     result = utils._convertFractions(result, 0);
     result = utils._convertSqrt(result);
     result = utils._convertFontsAndDecorations(result);
@@ -557,17 +679,17 @@ function _processLatexSegment(segment) {
  * @param {string} text 제거할 문자열
  * @returns {string} LaTeX 제거 문자열
  */
-function LatexToText(text) {
+function _legacyLatexToText(text) {
     // LaTeX가 포함되었는지 확인
     if (!text.includes('$') && !text.includes('\\')) {
         return text;
     }
-    const textOutsideCode = text.replace(/```[\s\S]*?```/g, '');
-    if (!/\$[^$]|\\\[|\\\(|\\[a-zA-Z]{2,}|\\begin/.test(textOutsideCode)) {
+    const textOutsideCode = text.replace(RE_CODE_BLOCK, '');
+    if (!RE_LATEX_COMMAND_CHECK.test(textOutsideCode) && !_hasConvertibleInlineMath(textOutsideCode)) {
         return text;
     }
 
-    try {  
+    try {
         // 코드 블록 토큰
         const codeBlocks = [];
         let processedText = text.replace(RE_CODE_BLOCK, (_, lang, code) => {
@@ -586,8 +708,6 @@ function LatexToText(text) {
             { regex: /\\\[[\s\S]*?\\\]/g, strip: /^\\\[|\\\]$/g },
             // \(...\)
             { regex: /\\\([\s\S]*?\\\)/g, strip: /^\\\(|\\\)$/g },
-            // $ 인라인
-            { regex: /\$[^$]+\$/g, strip: /^\$|\$$/g },
             // \boxed{...}
             { regex: /\\boxed\{[^}]*\}/g, strip: null }
         ];
@@ -596,23 +716,492 @@ function LatexToText(text) {
             let pattern = latexPatterns[i];
             processedText = processedText.replace(pattern.regex, (match) => {
                 let cleaned = pattern.strip ? match.replace(pattern.strip, '') : match;
+                if (pattern.validate && !pattern.validate(cleaned)) {
+                    return match;
+                }
                 return _processLatexSegment(cleaned);
             });
         }
 
-        for (let n = 0; n < codeBlocks.length; n++) {
-            let block = codeBlocks[n];
-            processedText = processedText.replace(
-                TOKEN_START + "CB" + n + TOKEN_END,
-                `\n\`\`\`${block.lang}\n${block.code}\n\`\`\``
-            );
-        }
-        
-        return processedText;
-          
+        processedText = _replaceInlineMathSegments(processedText);
+
+        return _restoreCodeBlocks(processedText, codeBlocks);
+
     } catch(e) {
         Log.e(`${e.name}\n${e.message}\n${e.stack}`);
         return text;
+    }
+}
+
+
+/* ============================= 보강 변환 로직 =============================== */
+
+
+const RE_INLINE_CODE_V2 = /`([^`\n]+)`/g;
+const RE_ANY_CODE_TOKEN_V2 = /⟦𪚥(?:CB|IC)(\d+)𪚥⟧/g;
+
+/** @description 백슬래시 이스케이프 여부 확인 */
+function _v2IsEscaped(source, index) {
+    let count = 0;
+    for (let i = index - 1; i >= 0 && source.charAt(i) === "\\"; i--) count++;
+    return count % 2 === 1;
+}
+/** @description 지정 위치의 닫힘 토큰 검색 */
+function _v2FindClosing(source, start, closeToken, allowNewline) {
+    for (let i = start; i < source.length; i++) {
+        if (!allowNewline && source.charAt(i) === "\n") return -1;
+        if (source.startsWith(closeToken, i) && !_v2IsEscaped(source, i)) return i;
+    }
+    return -1;
+}
+/** @description 중괄호 인자 읽기 */
+function _v2ReadGroup(source, index, open, close) {
+    if (source.charAt(index) !== open) return null;
+    let depth = 1;
+    for (let i = index + 1; i < source.length; i++) {
+        const ch = source.charAt(i);
+        if (ch === "\\" && i + 1 < source.length) {
+            i++;
+            continue;
+        }
+        if (ch === open) depth++;
+        else if (ch === close) {
+            depth--;
+            if (depth === 0) {
+                return {
+                    value: source.slice(index + 1, i),
+                    end: i + 1
+                };
+            }
+        }
+    }
+    return null;
+}
+/** @description 공백 건너뛰기 */
+function _v2SkipSpaces(source, index) {
+    let i = index;
+    while (i < source.length && /\s/.test(source.charAt(i))) i++;
+    return i;
+}
+/** @description 명령 뒤 중괄호 인자 읽기 */
+function _v2ReadBracedArg(source, index) {
+    const start = _v2SkipSpaces(source, index);
+    return _v2ReadGroup(source, start, "{", "}");
+}
+/** @description 명령 뒤 선택 인자 읽기 */
+function _v2ReadOptionalArg(source, index) {
+    const start = _v2SkipSpaces(source, index);
+    return _v2ReadGroup(source, start, "[", "]");
+}
+/** @description LaTeX 행 분리 */
+function _v2SplitRows(source) {
+    const rows = [];
+    let buf = "";
+    for (let i = 0; i < source.length; i++) {
+        if (source.startsWith("\\\\", i)) {
+            rows.push(buf);
+            buf = "";
+            i++;
+            continue;
+        }
+        buf += source.charAt(i);
+    }
+    rows.push(buf);
+    return rows;
+}
+/** @description LaTeX 셀 분리 */
+function _v2SplitCells(source) {
+    const cells = [];
+    let buf = "";
+    let braceDepth = 0;
+    for (let i = 0; i < source.length; i++) {
+        const ch = source.charAt(i);
+        if (ch === "\\" && i + 1 < source.length) {
+            buf += ch + source.charAt(i + 1);
+            i++;
+            continue;
+        }
+        if (ch === "{") braceDepth++;
+        else if (ch === "}" && braceDepth > 0) braceDepth--;
+        if (ch === "&" && braceDepth === 0) {
+            cells.push(buf.trim());
+            buf = "";
+            continue;
+        }
+        buf += ch;
+    }
+    cells.push(buf.trim());
+    return cells;
+}
+/** @description 환경 끝 위치 검색 */
+function _v2FindEnvironmentEnd(source, beginIndex) {
+    const beginMatch = source.slice(beginIndex).match(/^\\begin\{([^}]+)\}/);
+    if (!beginMatch) return null;
+    const env = beginMatch[1];
+    const contentStart = beginIndex + beginMatch[0].length;
+    const endToken = `\\end{${env}}`;
+    const endIndex = source.indexOf(endToken, contentStart);
+    if (endIndex < 0) return null;
+    return {
+        env,
+        content: source.slice(contentStart, endIndex),
+        end: endIndex + endToken.length
+    };
+}
+/** @description cases 환경 변환 */
+function _v2ConvertCases(content) {
+    const lines = [];
+    for (let row of _v2SplitRows(content)) {
+        row = row.trim();
+        if (!row) continue;
+        const cells = _v2SplitCells(row);
+        const expr = _v2ConvertMath(cells[0] || "");
+        const cond = _v2ConvertMath(String(cells.slice(1).join(" ").replace(/\\text\{if\s*\}/g, "") || "").trim());
+        lines.push("│ " + expr + (cond ? " if " + cond : ""));
+    }
+    return "┌─ cases ─────\n" + lines.join("\n") + "\n└────────────";
+}
+/** @description matrix 계열 환경 변환 */
+function _v2ConvertMatrix(env, content) {
+    const brackets = env === "pmatrix" ? ["(", ")"] : env === "bmatrix" ? ["[", "]"] : ["", ""];
+    const rows = [];
+    for (let row of _v2SplitRows(content)) {
+        row = row.trim();
+        if (!row) continue;
+        rows.push(_v2SplitCells(row).map(cell => _v2ConvertMath(cell)).join("  "));
+    }
+    const body = rows.join(" | ");
+    return brackets[0] ? `${brackets[0]} ${body} ${brackets[1]}` : body;
+}
+/** @description 정렬 환경 변환 */
+function _v2ConvertAligned(env, content) {
+    const lines = [];
+    for (let row of _v2SplitRows(content)) {
+        row = row.trim();
+        if (!row) continue;
+        lines.push("│ " + _v2ConvertMath(row.replace(/&/g, "")));
+    }
+    return "┌─ " + env + " ─────\n" + lines.join("\n") + "\n└────────────";
+}
+/** @description 환경 변환 */
+function _v2ConvertEnvironment(env, content) {
+    if (env === "cases") return _v2ConvertCases(content);
+    if (env === "matrix" || env === "pmatrix" || env === "bmatrix") return _v2ConvertMatrix(env, content);
+    if (env === "align" || env === "align*" || env === "gather" || env === "gather*") return _v2ConvertAligned(env, content);
+    return _v2ConvertMathEnvironment(`\\begin{${env}}${content}\\end{${env}}`);
+}
+/** @description 환경 포함 수식 변환 */
+function _v2ConvertEnvironments(source) {
+    let result = "";
+    for (let i = 0; i < source.length;) {
+        if (source.startsWith("\\begin{", i)) {
+            const env = _v2FindEnvironmentEnd(source, i);
+            if (env) {
+                result += _v2ConvertEnvironment(env.env, env.content);
+                i = env.end;
+                continue;
+            }
+        }
+        result += source.charAt(i);
+        i++;
+    }
+    return result;
+}
+/** @description 구분자 명령 변환 */
+function _v2ReadDelimiterAfterCommand(source, index) {
+    const i = _v2SkipSpaces(source, index);
+    if (source.startsWith("\\{", i)) return { value: "{", end: i + 2 };
+    if (source.startsWith("\\}", i)) return { value: "}", end: i + 2 };
+    if (source.startsWith("\\|", i)) return { value: "‖", end: i + 2 };
+    const ch = source.charAt(i);
+    if (ch === "(" || ch === ")" || ch === "[" || ch === "]" || ch === "|" || ch === "." || ch === "{" || ch === "}") {
+        return { value: ch === "." ? "" : ch, end: i + 1 };
+    }
+    return { value: "", end: index };
+}
+/** @description 함수형 명령 변환 */
+function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
+    if (command === "left" || command === "right" || command === "middle") {
+        return _v2ReadDelimiterAfterCommand(source, commandEnd);
+    }
+    if (command === "frac" || command === "dfrac") {
+        const num = _v2ReadBracedArg(source, commandEnd);
+        if (!num) return { value: command, end: commandEnd };
+        const den = _v2ReadBracedArg(source, num.end);
+        if (!den) return { value: command + "(" + _v2ConvertMath(num.value, depth + 1) + ")", end: num.end };
+        const numText = _v2ConvertMath(num.value, depth + 1);
+        const denText = _v2ConvertMath(den.value, depth + 1);
+        const n = /[+\-\/]/.test(numText) ? `(${numText})` : numText;
+        const d = /[+\-\/]/.test(denText) ? `(${denText})` : denText;
+        return { value: n + "/" + d, end: den.end };
+    }
+    if (command === "sqrt") {
+        const opt = _v2ReadOptionalArg(source, commandEnd);
+        const argStart = opt ? opt.end : commandEnd;
+        const arg = _v2ReadBracedArg(source, argStart);
+        if (!arg) return { value: command, end: commandEnd };
+        const expr = _v2ConvertMath(arg.value, depth + 1);
+        const n = opt ? opt.value.trim() : "";
+        if (n === "3") return { value: `∛(${expr})`, end: arg.end };
+        if (n === "4") return { value: `∜(${expr})`, end: arg.end };
+        return { value: n ? `${n}√(${expr})` : `√(${expr})`, end: arg.end };
+    }
+    if (command === "textcolor") {
+        const color = _v2ReadBracedArg(source, commandEnd);
+        if (!color) return { value: command, end: commandEnd };
+        const arg = _v2ReadBracedArg(source, color.end);
+        if (!arg) return { value: command + "(" + color.value.replace(/[{}]/g, "") + ")", end: color.end };
+        return { value: _v2ConvertMath(arg.value, depth + 1), end: arg.end };
+    }
+    if (command === "text" || command === "operatorname" || command === "mathrm" || command === "mathit" || command === "mathsf" || command === "textrm") {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (!arg) return { value: command, end: commandEnd };
+        return { value: arg.value.replace(/[{}]/g, ""), end: arg.end };
+    }
+    if (mathFonts.has(command)) {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (!arg) return { value: command, end: commandEnd };
+        return { value: _convertFont(_v2ConvertMath(arg.value, depth + 1), mathFonts.get(command)), end: arg.end };
+    }
+    if (decorations.has(command)) {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (!arg) return { value: command, end: commandEnd };
+        return { value: _v2ConvertMath(arg.value, depth + 1) + decorations.get(command), end: arg.end };
+    }
+    if (command === "boxed") {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (!arg) return { value: command, end: commandEnd };
+        return { value: "[" + _v2ConvertMath(arg.value, depth + 1) + "]", end: arg.end };
+    }
+    if (command === "textcircled") {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (!arg) return { value: command, end: commandEnd };
+        return { value: textCircledMap.get(arg.value) || "Ⓞ", end: arg.end };
+    }
+    if (command === "sum" || command === "prod") {
+        return { value: command === "sum" ? "Σ" : "Π", end: commandEnd };
+    }
+    if (command === "int" || command === "oint") {
+        return { value: command === "oint" ? "∮" : "∫", end: commandEnd };
+    }
+    if (spaces.has("\\" + command)) {
+        return { value: spaces.get("\\" + command), end: commandEnd };
+    }
+    if (symbolMap.has(command)) {
+        return { value: symbolMap.get(command), end: commandEnd };
+    }
+
+    const arg = _v2ReadBracedArg(source, commandEnd);
+    if (arg) return { value: command + "(" + _v2ConvertMath(arg.value, depth + 1) + ")", end: arg.end };
+    return { value: command, end: commandEnd };
+}
+/** @description LaTeX 명령 변환 */
+function _v2ConvertCommands(source, depth) {
+    let result = "";
+    for (let i = 0; i < source.length;) {
+        const ch = source.charAt(i);
+        if (ch !== "\\") {
+            result += ch;
+            i++;
+            continue;
+        }
+        if (i + 1 >= source.length) {
+            result += "\\";
+            i++;
+            continue;
+        }
+        const next = source.charAt(i + 1);
+        if (next === "," || next === ":" || next === ";" || next === "!") {
+            result += spaces.get("\\" + next) || "";
+            i += 2;
+            continue;
+        }
+        if (next === "\\" || next === "{" || next === "}" || next === "%" || next === "$" || next === "_" || next === "&" || next === "#") {
+            result += next;
+            i += 2;
+            continue;
+        }
+        if (!/[A-Za-z]/.test(next)) {
+            result += next;
+            i += 2;
+            continue;
+        }
+        let end = i + 1;
+        while (end < source.length && /[A-Za-z]/.test(source.charAt(end))) end++;
+        const command = source.slice(i + 1, end);
+        const converted = _v2ConvertKnownCommand(command, source, end, depth);
+        result += converted.value;
+        i = converted.end;
+    }
+    return result;
+}
+/** @description 첨자 토큰 읽기 */
+function _v2ReadScriptToken(source, index) {
+    if (source.charAt(index) === "{") {
+        const group = _v2ReadGroup(source, index, "{", "}");
+        if (group) return group;
+    }
+    if (index < source.length) {
+        return {
+            value: source.charAt(index),
+            end: index + 1
+        };
+    }
+    return null;
+}
+/** @description 첨자/위첨자 변환 */
+function _v2ConvertScripts(source) {
+    let result = "";
+    for (let i = 0; i < source.length;) {
+        const ch = source.charAt(i);
+        if ((ch === "_" || ch === "^") && i + 1 < source.length) {
+            const token = _v2ReadScriptToken(source, i + 1);
+            if (token) {
+                const converted = _convertToScript(token.value, ch === "_" ? subscriptsMap : superscriptsMap);
+                result += converted;
+                i = token.end;
+                continue;
+            }
+        }
+        result += ch;
+        i++;
+    }
+    return result;
+}
+/** @description 수식 환경 잔여 문법 정리 */
+function _v2ConvertMathEnvironment(source) {
+    return source
+        .replace(RE_BEGIN_ENV, "")
+        .replace(RE_END_ENV, "")
+        .replace(RE_ALIGN_SYMBOL, "=")
+        .replace(RE_AMPERSAND, "")
+        .replace(RE_LINEBREAK, " ");
+}
+/** @description 변환 결과 정리 */
+function _v2CleanupMath(source) {
+    return source
+        .replace(RE_DISPLAYSTYLE, "")
+        .replace(/[{}]/g, "")
+        .replace(/\s*([+\-=<>≤≥≈≠×÷∙∘∧∨⟺⇒⇐→←∪∩∈∉⊂⊃⊆⊇])\s*/g, " $1 ")
+        .replace(/[ \t\r\f\v\u2000-\u200A\u205F\u3000]+/g, " ")
+        .replace(/\n[ \t]+/g, "\n")
+        .trim();
+}
+/** @description 수식 본문 변환 */
+function _v2ConvertMath(math, depth = 0) {
+    if (depth > 30) return String(math || "");
+    let result = String(math || "");
+    result = result.replace(RE_DFRAC, "\\frac");
+    result = _v2ConvertEnvironments(result);
+    result = _v2ConvertCommands(result, depth);
+    result = _v2ConvertScripts(result);
+    result = _v2ConvertMathEnvironment(result);
+    return _v2CleanupMath(result);
+}
+/** @description 수식 후보 여부 확인 */
+function _v2IsLikelyMath(content, isDisplay) {
+    const source = String(content || "").trim();
+    if (!source) return false;
+    if (isDisplay) return true;
+    if (/^-?\d+(?:\.\d+)?$/.test(source)) return true;
+    if (/^-?\d+(?:\.\d+)?[A-Za-z]+$/.test(source)) return true;
+    return _isLikelyInlineMath(source);
+}
+/** @description 코드 토큰 보호 */
+function _v2ProtectCode(text, blocks) {
+    let result = text.replace(RE_CODE_BLOCK, (match) => {
+        const token = TOKEN_START + "CB" + blocks.length + TOKEN_END;
+        blocks.push({ type: "block", text: match });
+        return token;
+    });
+    result = result.replace(RE_INLINE_CODE_V2, (match, code) => {
+        const token = TOKEN_START + "IC" + blocks.length + TOKEN_END;
+        blocks.push({ type: "inline", code });
+        return token;
+    });
+    return result;
+}
+/** @description 코드 토큰 복원 */
+function _v2RestoreCode(text, blocks) {
+    return text.replace(RE_ANY_CODE_TOKEN_V2, (match, indexStr) => {
+        const block = blocks[Number(indexStr)];
+        if (!block) return match;
+        if (block.type === "inline") return "`" + block.code + "`";
+        return block.text;
+    });
+}
+/** @description 텍스트 내 수식 구간 변환 */
+function _v2ReplaceMathSegments(text) {
+    let result = "";
+    for (let i = 0; i < text.length;) {
+        if (text.startsWith("$$", i) && !_v2IsEscaped(text, i)) {
+            const end = _v2FindClosing(text, i + 2, "$$", true);
+            if (end > i + 2) {
+                const content = text.slice(i + 2, end);
+                if (_v2IsLikelyMath(content, true)) {
+                    result += _v2ConvertMath(content);
+                    i = end + 2;
+                    continue;
+                }
+            }
+        }
+        if (text.charAt(i) === "$" && !_v2IsEscaped(text, i)) {
+            const end = _v2FindClosing(text, i + 1, "$", false);
+            if (end > i) {
+                const content = text.slice(i + 1, end);
+                if (_v2IsLikelyMath(content, false)) {
+                    result += _v2ConvertMath(content);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        if ((text.startsWith("\\(", i) || text.startsWith("\\[", i)) && !_v2IsEscaped(text, i)) {
+            const close = text.startsWith("\\(", i) ? "\\)" : "\\]";
+            const end = _v2FindClosing(text, i + 2, close, close === "\\]");
+            if (end >= 0) {
+                result += _v2ConvertMath(text.slice(i + 2, end));
+                i = end + 2;
+                continue;
+            }
+        }
+        if (text.startsWith("\\begin{", i)) {
+            const env = _v2FindEnvironmentEnd(text, i);
+            if (env) {
+                result += _v2ConvertEnvironment(env.env, env.content);
+                i = env.end;
+                continue;
+            }
+        }
+        if (text.startsWith("\\$", i)) {
+            result += "$";
+            i += 2;
+            continue;
+        }
+        result += text.charAt(i);
+        i++;
+    }
+    return result;
+}
+/**
+ * @description LaTeX 제거(변환) 함수
+ * @param {string} text 제거할 문자열
+ * @returns {string} LaTeX 제거 문자열
+ */
+function LatexToText(text) {
+    const source = text == null ? "" : String(text);
+    if (!source.includes("$") && !source.includes("\\")) return source;
+
+    try {
+        const codeBlocks = [];
+        const protectedText = _v2ProtectCode(source, codeBlocks);
+        const converted = _v2ReplaceMathSegments(protectedText);
+        return _v2RestoreCode(converted, codeBlocks);
+    } catch(e) {
+        if (typeof Log !== "undefined" && Log?.e) {
+            Log.e(`${e.name}\n${e.message}\n${e.stack}`);
+        }
+        return source;
     }
 }
 

@@ -42,10 +42,12 @@ const TOKEN_URL = "有斡恚累";
 const TOKEN_CODE = "高頭不歷";
 const TOKEN_INLINE = "引羅引";
 const ZERO_WIDTH_SPACE = "\u200b";
-const ALL_TOKENS_REGEX = new RegExp(
-    `${TOKEN_START}(${TOKEN_URL}|${TOKEN_CODE}|${TOKEN_INLINE})(.)?${TOKEN_END}`,
-    "g"
-);
+function _getAllTokensRegex() {
+    return new RegExp(
+        `${TOKEN_START}(${TOKEN_URL}|${TOKEN_CODE}|${TOKEN_INLINE})(.)?${TOKEN_END}`,
+        "g"
+    );
+}
 
 // 허용 특수문자
 const ALLOWED_CHARS_PATTERN = (() => {
@@ -181,6 +183,15 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         if (/[\p{P}\p{S}]/u.test(char)) return true;
         return /[!-/:-@[-`{-~]/.test(char);
     }
+    /** @description 강조 내부 첫 가시 문자 반환 */
+    function _getFirstVisibleChar(text) {
+        for (let i = 0; i < text.length; i++) {
+            const char = text.charAt(i);
+            if (char === ZERO_WIDTH_SPACE) continue;
+            return char;
+        }
+        return "";
+    }
     /** @description 강조 내부 마지막 가시 문자 반환 */
     function _getLastVisibleChar(text) {
         for (let i = text.length - 1; i >= 0; i--) {
@@ -199,9 +210,11 @@ function mdToText(markdown, useKakaoMarkdown = false) {
     }
     /** @description 카카오 강조 출력 보정 */
     function _formatKakaoEmphasis(delimiter, content, nextChar) {
-        return _shouldInsertZwspBeforeClosing(content, nextChar)
-            ? `${delimiter}${content}${ZERO_WIDTH_SPACE}${delimiter}`
-            : `${delimiter}${content}${delimiter}`;
+        const needZwspAfterOpen = useKakaoMarkdown && _isMarkdownPunctuationOrSymbol(_getFirstVisibleChar(content));
+        const needZwspBeforeClose = _shouldInsertZwspBeforeClosing(content, nextChar);
+        const open = needZwspAfterOpen ? `${delimiter}${ZERO_WIDTH_SPACE}` : delimiter;
+        const close = needZwspBeforeClose ? `${ZERO_WIDTH_SPACE}${delimiter}` : delimiter;
+        return `${open}${content}${close}`;
     }
     /** @description 헤딩 들여쓰기 계산 */
     function _getHeadingIndent(level) {
@@ -283,7 +296,7 @@ function mdToText(markdown, useKakaoMarkdown = false) {
     }
     /** @description 코드블록 내부 토큰 복원 */
     function _restoreCodeTokens(code, usePlainCodeStyle = !useKakaoMarkdown) {
-        return code.replace(ALL_TOKENS_REGEX, (m2, t2, idxChar2) => {
+        return code.replace(_getAllTokensRegex(), (m2, t2, idxChar2) => {
             const idx2 = CHAR_TO_INDEX.get(idxChar2);
             if (idx2 === undefined) return m2;
 
@@ -315,7 +328,7 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         if (!match) return line;
         const level = (match[1].match(/>/g) || []).length;
         let content = match[2];
-        content = content.replace(ALL_TOKENS_REGEX, (m, type, idxChar) => {
+        content = content.replace(_getAllTokensRegex(), (m, type, idxChar) => {
             const index = CHAR_TO_INDEX.get(idxChar);
             if (index === undefined) return m;
             if (type === TOKEN_INLINE) return `⦗ ${inlineCodes[index]} ⦘`;
@@ -473,7 +486,7 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         .replace(MD_PATTERNS.TABLE, _processTable);
 
     // 토큰 복원
-    result = result.replace(ALL_TOKENS_REGEX, (match, type, idxChar) => {
+    result = result.replace(_getAllTokensRegex(), (match, type, idxChar) => {
         const index = CHAR_TO_INDEX.get(idxChar);
         if (index === undefined) return match;
     
