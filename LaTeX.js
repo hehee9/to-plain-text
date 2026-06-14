@@ -218,6 +218,13 @@ const spaces = new Map([
     ['\\,', '\u2009'], ['\\:', '\u205F'], ['\\;', '\u2004'], ['\\!', ''],
     ['\\quad', '\u2003'], ['\\qquad', '\u2003\u2003']
 ]);
+const mathFunctionCommands = new Set([
+    "log", "ln", "lg",
+    "sin", "cos", "tan", "cot", "sec", "csc",
+    "arcsin", "arccos", "arctan",
+    "sinh", "cosh", "tanh",
+    "lim", "min", "max", "sup", "inf", "deg", "det", "dim", "gcd", "hom", "ker", "Pr", "exp"
+]);
 
 
 // 정규식 사전 컴파일
@@ -788,6 +795,21 @@ function _v2ReadBracedArg(source, index) {
     const start = _v2SkipSpaces(source, index);
     return _v2ReadGroup(source, start, "{", "}");
 }
+/** @description 단일 토큰 인자 읽기 */
+function _v2ReadSingleArg(source, index) {
+    const start = _v2SkipSpaces(source, index);
+    if (start >= source.length) return null;
+    const braced = _v2ReadGroup(source, start, "{", "}");
+    if (braced) return braced;
+    const ch = source.charAt(start);
+    if (/[A-Za-z0-9]/.test(ch)) return { value: ch, end: start + 1 };
+    if (ch === "\\") {
+        let end = start + 1;
+        while (end < source.length && /[A-Za-z]/.test(source.charAt(end))) end++;
+        if (end > start + 1) return { value: source.slice(start, end), end };
+    }
+    return null;
+}
 /** @description 명령 뒤 선택 인자 읽기 */
 function _v2ReadOptionalArg(source, index) {
     const start = _v2SkipSpaces(source, index);
@@ -919,6 +941,12 @@ function _v2ReadDelimiterAfterCommand(source, index) {
     }
     return { value: "", end: index };
 }
+/** @description 분수 텍스트 조합 */
+function _v2FormatFraction(numText, denText) {
+    const n = /[+\-\/]/.test(numText) ? `(${numText})` : numText;
+    const d = /[+\-\/]/.test(denText) ? `(${denText})` : denText;
+    return n + "/" + d;
+}
 /** @description 함수형 명령 변환 */
 function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
     if (command === "left" || command === "right" || command === "middle") {
@@ -926,14 +954,21 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
     }
     if (command === "frac" || command === "dfrac") {
         const num = _v2ReadBracedArg(source, commandEnd);
-        if (!num) return { value: command, end: commandEnd };
+        if (!num) {
+            const shortNum = _v2ReadSingleArg(source, commandEnd);
+            if (!shortNum) return { value: command, end: commandEnd };
+            const shortDen = _v2ReadSingleArg(source, shortNum.end);
+            if (!shortDen) return { value: command + "(" + _v2ConvertMath(shortNum.value, depth + 1) + ")", end: shortNum.end };
+            return {
+                value: _v2FormatFraction(_v2ConvertMath(shortNum.value, depth + 1), _v2ConvertMath(shortDen.value, depth + 1)),
+                end: shortDen.end
+            };
+        }
         const den = _v2ReadBracedArg(source, num.end);
         if (!den) return { value: command + "(" + _v2ConvertMath(num.value, depth + 1) + ")", end: num.end };
         const numText = _v2ConvertMath(num.value, depth + 1);
         const denText = _v2ConvertMath(den.value, depth + 1);
-        const n = /[+\-\/]/.test(numText) ? `(${numText})` : numText;
-        const d = /[+\-\/]/.test(denText) ? `(${denText})` : denText;
-        return { value: n + "/" + d, end: den.end };
+        return { value: _v2FormatFraction(numText, denText), end: den.end };
     }
     if (command === "sqrt") {
         const opt = _v2ReadOptionalArg(source, commandEnd);
@@ -986,6 +1021,10 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
     }
     if (spaces.has("\\" + command)) {
         return { value: spaces.get("\\" + command), end: commandEnd };
+    }
+    if (mathFunctionCommands.has(command)) {
+        const next = _v2SkipSpaces(source, commandEnd);
+        return { value: source.charAt(next) === "(" ? command : " " + command + " ", end: commandEnd };
     }
     if (symbolMap.has(command)) {
         return { value: symbolMap.get(command), end: commandEnd };
