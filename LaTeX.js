@@ -65,14 +65,19 @@ const symbolMap = new Map([
 
     ['neg', '¬'], ['land', '∧'], ['lor', '∨'],
     ['Leftrightarrow', '⟺'], ['Rightarrow', '⇒'], ['Leftarrow', '⇐'],
-    ['rightarrow', '→'], ['leftarrow', '←'], ['forall', '∀'], ['exists', '∃'],
+    ['Longleftrightarrow', '⟺'], ['Longrightarrow', '⟹'], ['Longleftarrow', '⟸'],
+    ['longleftrightarrow', '⟷'], ['longrightarrow', '⟶'], ['longleftarrow', '⟵'],
+    ['rightarrow', '→'], ['leftarrow', '←'], ['leftrightarrow', '↔'], ['to', '→'], ['gets', '←'],
+    ['rightleftharpoons', '⇌'], ['leftrightharpoons', '⇋'],
+    ['forall', '∀'], ['exists', '∃'],
     ['mapsto', '↦'], ['longmapsto', '⟼'], ['hookrightarrow', '↪'], ['hookleftarrow', '↩'],
     ['rightharpoonup', '⇀'], ['leftharpoonup', '↼'], ['rightharpoondown', '⇁'], ['leftharpoondown', '↽'],
     ['updownarrow', '↕'], ['Updownarrow', '⇕'], ['nearrow', '↗'], ['searrow', '↘'], ['swarrow', '↙'],
     ['nwarrow', '↖'], ['top', '⊤'], ['bot', '⊥'],
     ['circlearrowleft', '↺'], ['circlearrowright', '↻'], ['curvearrowleft', '↶'], ['curvearrowright', '↷'],
-    ['leftrightarrow', '↔'],
     ['uparrow', '↑'], ['downarrow', '↓'], ['twoheadrightarrow', '↠'], ['rightsquigarrow', '⇝'],
+
+    ['ne', '≠'], ['langle', '⟨'], ['rangle', '⟩'],
 
     ['in', '∈'], ['notin', '∉'], ['cup', '∪'], ['cap', '∩'],
     ['subset', '⊂'], ['subseteq', '⊆'], ['supset', '⊃'], ['supseteq', '⊇'],
@@ -117,6 +122,7 @@ const symbolMap = new Map([
     ['circledS', 'Ⓢ'], ['circledR', '®'], ['trademark', '™'], ['copyright', '©'],
 
     ['measuredangle', '∡'], ['sphericalangle', '∢'], ['nmid', '∤'], ['lvert', '|'], ['rvert', '|'],
+    ['lVert', '‖'], ['rVert', '‖'], ['Vert', '‖'], ['vert', '|'],
 
     ['dagger', '†'], ['ddagger', '‡'], ['amalg', '⨿'], ['bigcap', '⋂'], ['bigcup', '⋃'], ['bigsqcup', '⨆'],
     ['bigvee', '⋁'], ['bigwedge', '⋀'], ['bigodot', '⨀'], ['bigoplus', '⨁'], ['bigotimes', '⨂'],
@@ -221,10 +227,20 @@ const spaces = new Map([
 const mathFunctionCommands = new Set([
     "log", "ln", "lg",
     "sin", "cos", "tan", "cot", "sec", "csc",
-    "arcsin", "arccos", "arctan",
+    "arcsin", "arccos", "arctan", "atan", "atan2",
     "sinh", "cosh", "tanh",
-    "lim", "min", "max", "sup", "inf", "deg", "det", "dim", "gcd", "hom", "ker", "Pr", "exp"
+    "lim", "min", "max", "sup", "inf", "deg", "det", "dim", "gcd", "hom", "ker", "Pr", "exp", "arg"
 ]);
+const fracLikeCommands = new Set(["frac", "dfrac", "tfrac", "cfrac"]);
+const bigDelimiterCommands = new Set([
+    "big", "Big", "bigg", "Bigg",
+    "bigl", "bigr", "Bigl", "Bigr",
+    "biggl", "biggr", "Biggl", "Biggr"
+]);
+const V2_LEFT_BRACE_PLACEHOLDER = "\uE000";
+const V2_RIGHT_BRACE_PLACEHOLDER = "\uE001";
+const RE_V2_LEFT_BRACE_PLACEHOLDER = /\uE000/g;
+const RE_V2_RIGHT_BRACE_PLACEHOLDER = /\uE001/g;
 
 
 // 정규식 사전 컴파일
@@ -885,9 +901,14 @@ function _v2ConvertCases(content) {
 }
 /** @description matrix 계열 환경 변환 */
 function _v2ConvertMatrix(env, content) {
-    const brackets = env === "pmatrix" ? ["(", ")"] : env === "bmatrix" ? ["[", "]"] : ["", ""];
+    const brackets = env === "pmatrix" ? ["(", ")"] :
+        env === "bmatrix" ? ["[", "]"] :
+        env === "vmatrix" ? ["|", "|"] :
+        env === "Vmatrix" ? ["‖", "‖"] :
+        ["", ""];
     const rows = [];
-    for (let row of _v2SplitRows(content)) {
+    const matrixContent = env === "array" ? content.replace(/^\s*\{[^}]*\}/, "") : content;
+    for (let row of _v2SplitRows(matrixContent)) {
         row = row.trim();
         if (!row) continue;
         rows.push(_v2SplitCells(row).map(cell => _v2ConvertMath(cell)).join("  "));
@@ -906,14 +927,16 @@ function _v2ConvertAligned(env, content) {
     return "┌─ " + env + " ─────\n" + lines.join("\n") + "\n└────────────";
 }
 /** @description 환경 변환 */
-function _v2ConvertEnvironment(env, content) {
+function _v2ConvertEnvironment(env, content, standalone) {
     if (env === "cases") return _v2ConvertCases(content);
-    if (env === "matrix" || env === "pmatrix" || env === "bmatrix") return _v2ConvertMatrix(env, content);
+    if (env === "matrix" || env === "pmatrix" || env === "bmatrix" || env === "vmatrix" || env === "Vmatrix" || env === "smallmatrix" || env === "array") return _v2ConvertMatrix(env, content);
     if (env === "align" || env === "align*" || env === "gather" || env === "gather*") return _v2ConvertAligned(env, content);
+    if (standalone) return _v2ConvertMath(_v2ConvertMathEnvironment(content));
     return _v2ConvertMathEnvironment(`\\begin{${env}}${content}\\end{${env}}`);
 }
 /** @description 환경 포함 수식 변환 */
 function _v2ConvertEnvironments(source) {
+    if (!source.includes("\\begin{")) return source;
     let result = "";
     for (let i = 0; i < source.length;) {
         if (source.startsWith("\\begin{", i)) {
@@ -932,27 +955,68 @@ function _v2ConvertEnvironments(source) {
 /** @description 구분자 명령 변환 */
 function _v2ReadDelimiterAfterCommand(source, index) {
     const i = _v2SkipSpaces(source, index);
-    if (source.startsWith("\\{", i)) return { value: "{", end: i + 2 };
-    if (source.startsWith("\\}", i)) return { value: "}", end: i + 2 };
+    if (source.startsWith("\\{", i)) return { value: V2_LEFT_BRACE_PLACEHOLDER, end: i + 2 };
+    if (source.startsWith("\\}", i)) return { value: V2_RIGHT_BRACE_PLACEHOLDER, end: i + 2 };
+    if (source.startsWith("\\lVert", i)) return { value: "‖", end: i + 6 };
+    if (source.startsWith("\\rVert", i)) return { value: "‖", end: i + 6 };
+    if (source.startsWith("\\Vert", i)) return { value: "‖", end: i + 5 };
+    if (source.startsWith("\\lvert", i)) return { value: "|", end: i + 6 };
+    if (source.startsWith("\\rvert", i)) return { value: "|", end: i + 6 };
+    if (source.startsWith("\\vert", i)) return { value: "|", end: i + 5 };
     if (source.startsWith("\\|", i)) return { value: "‖", end: i + 2 };
     const ch = source.charAt(i);
     if (ch === "(" || ch === ")" || ch === "[" || ch === "]" || ch === "|" || ch === "." || ch === "{" || ch === "}") {
-        return { value: ch === "." ? "" : ch, end: i + 1 };
+        const value = ch === "." ? "" : ch === "{" ? V2_LEFT_BRACE_PLACEHOLDER : ch === "}" ? V2_RIGHT_BRACE_PLACEHOLDER : ch;
+        return { value, end: i + 1 };
     }
     return { value: "", end: index };
+}
+/** @description 수식 글꼴 본문 변환 및 경계 공백 보존 */
+function _v2ConvertMathFontBody(value, depth) {
+    const source = String(value || "");
+    const leading = source.match(/^\s*/)[0];
+    const trailing = source.match(/\s*$/)[0];
+    const body = source.slice(leading.length, source.length - trailing.length);
+    if (!body) return source;
+    return leading + _v2ConvertMath(body, depth) + trailing;
 }
 /** @description 분수 텍스트 조합 */
 function _v2FormatFraction(numText, denText) {
     const n = /[+\-\/]/.test(numText) ? `(${numText})` : numText;
     const d = /[+\-\/]/.test(denText) ? `(${denText})` : denText;
-    return n + "/" + d;
+    const fraction = n + "/" + d;
+    return _v2IsDerivativeFraction(numText, denText) ? fraction + " " : fraction;
+}
+/** @description 미분 분수 여부 확인 */
+function _v2IsDerivativeFraction(numText, denText) {
+    const n = String(numText || "").trim();
+    const d = String(denText || "").trim();
+    return (n === "d" || n === "∂") && (d.startsWith("d") || d.startsWith("∂"));
+}
+/** @description 함수명 앞 공백 필요 여부 확인 */
+function _v2NeedsLeadingFunctionSpace(result) {
+    if (!result) return false;
+    const last = result.charAt(result.length - 1);
+    return !/\s/.test(last) && !/[+\-=<>≤≥≈≠×÷∙∘∧∨⟺⇒⇐→←∪∩,;:([{|]/.test(last);
 }
 /** @description 함수형 명령 변환 */
 function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
     if (command === "left" || command === "right" || command === "middle") {
         return _v2ReadDelimiterAfterCommand(source, commandEnd);
     }
-    if (command === "frac" || command === "dfrac") {
+    if (bigDelimiterCommands.has(command)) {
+        return _v2ReadDelimiterAfterCommand(source, commandEnd);
+    }
+    if (command === "xrightarrow" || command === "xleftarrow") {
+        const lower = _v2ReadOptionalArg(source, commandEnd);
+        const upper = _v2ReadBracedArg(source, lower ? lower.end : commandEnd);
+        if (!upper) return { value: command, end: commandEnd };
+        const arrow = command === "xrightarrow" ? "→" : "←";
+        const lowerScript = lower && lower.value.trim() ? "_{" + lower.value + "}" : "";
+        const upperScript = upper.value.trim() ? "^{" + upper.value + "}" : "";
+        return { value: arrow + lowerScript + upperScript, end: upper.end };
+    }
+    if (fracLikeCommands.has(command)) {
         const num = _v2ReadBracedArg(source, commandEnd);
         if (!num) {
             const shortNum = _v2ReadSingleArg(source, commandEnd);
@@ -969,6 +1033,13 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
         const numText = _v2ConvertMath(num.value, depth + 1);
         const denText = _v2ConvertMath(den.value, depth + 1);
         return { value: _v2FormatFraction(numText, denText), end: den.end };
+    }
+    if (command === "binom") {
+        const top = _v2ReadBracedArg(source, commandEnd);
+        if (!top) return { value: command, end: commandEnd };
+        const bottom = _v2ReadBracedArg(source, top.end);
+        if (!bottom) return { value: command + "(" + _v2ConvertMath(top.value, depth + 1) + ")", end: top.end };
+        return { value: "C(" + _v2ConvertMath(top.value, depth + 1) + "," + _v2ConvertMath(bottom.value, depth + 1) + ")", end: bottom.end };
     }
     if (command === "sqrt") {
         const opt = _v2ReadOptionalArg(source, commandEnd);
@@ -988,15 +1059,26 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
         if (!arg) return { value: command + "(" + color.value.replace(/[{}]/g, "") + ")", end: color.end };
         return { value: _v2ConvertMath(arg.value, depth + 1), end: arg.end };
     }
-    if (command === "text" || command === "operatorname" || command === "mathrm" || command === "mathit" || command === "mathsf" || command === "textrm") {
+    if (command === "text" || command === "operatorname" || command === "textrm") {
         const arg = _v2ReadBracedArg(source, commandEnd);
-        if (!arg) return { value: command, end: commandEnd };
-        return { value: arg.value.replace(/[{}]/g, ""), end: arg.end };
+        if (arg) return { value: arg.value.replace(/[{}]/g, ""), end: arg.end };
+        const shortArg = _v2ReadSingleArg(source, commandEnd);
+        if (shortArg) return { value: _v2ConvertMath(shortArg.value, depth + 1), end: shortArg.end };
+        return { value: command, end: commandEnd };
+    }
+    if (command === "mathrm" || command === "mathit" || command === "mathsf") {
+        const arg = _v2ReadBracedArg(source, commandEnd);
+        if (arg) return { value: _v2ConvertMathFontBody(arg.value, depth + 1), end: arg.end };
+        const shortArg = _v2ReadSingleArg(source, commandEnd);
+        if (shortArg) return { value: _v2ConvertMathFontBody(shortArg.value, depth + 1), end: shortArg.end };
+        return { value: command, end: commandEnd };
     }
     if (mathFonts.has(command)) {
         const arg = _v2ReadBracedArg(source, commandEnd);
-        if (!arg) return { value: command, end: commandEnd };
-        return { value: _convertFont(_v2ConvertMath(arg.value, depth + 1), mathFonts.get(command)), end: arg.end };
+        if (arg) return { value: _convertFont(_v2ConvertMath(arg.value, depth + 1), mathFonts.get(command)), end: arg.end };
+        const shortArg = _v2ReadSingleArg(source, commandEnd);
+        if (shortArg) return { value: _convertFont(_v2ConvertMath(shortArg.value, depth + 1), mathFonts.get(command)), end: shortArg.end };
+        return { value: command, end: commandEnd };
     }
     if (decorations.has(command)) {
         const arg = _v2ReadBracedArg(source, commandEnd);
@@ -1022,9 +1104,10 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
     if (spaces.has("\\" + command)) {
         return { value: spaces.get("\\" + command), end: commandEnd };
     }
-    if (mathFunctionCommands.has(command)) {
-        const next = _v2SkipSpaces(source, commandEnd);
-        return { value: source.charAt(next) === "(" ? command : " " + command + " ", end: commandEnd };
+    const functionEnd = command === "atan" && source.charAt(commandEnd) === "2" ? commandEnd + 1 : commandEnd;
+    const functionName = functionEnd === commandEnd ? command : "atan2";
+    if (mathFunctionCommands.has(functionName)) {
+        return { value: functionName, end: functionEnd, kind: "function" };
     }
     if (symbolMap.has(command)) {
         return { value: symbolMap.get(command), end: commandEnd };
@@ -1036,6 +1119,7 @@ function _v2ConvertKnownCommand(command, source, commandEnd, depth) {
 }
 /** @description LaTeX 명령 변환 */
 function _v2ConvertCommands(source, depth) {
+    if (!source.includes("\\")) return source;
     let result = "";
     for (let i = 0; i < source.length;) {
         const ch = source.charAt(i);
@@ -1060,6 +1144,11 @@ function _v2ConvertCommands(source, depth) {
             i += 2;
             continue;
         }
+        if (next === "|") {
+            result += "‖";
+            i += 2;
+            continue;
+        }
         if (!/[A-Za-z]/.test(next)) {
             result += next;
             i += 2;
@@ -1069,7 +1158,13 @@ function _v2ConvertCommands(source, depth) {
         while (end < source.length && /[A-Za-z]/.test(source.charAt(end))) end++;
         const command = source.slice(i + 1, end);
         const converted = _v2ConvertKnownCommand(command, source, end, depth);
-        result += converted.value;
+        if (converted.kind === "function") {
+            const nextIndex = _v2SkipSpaces(source, converted.end);
+            const needsTrailing = source.charAt(nextIndex) && source.charAt(nextIndex) !== "(" && source.charAt(nextIndex) !== "_" && source.charAt(nextIndex) !== "^" && !/\s/.test(source.charAt(converted.end));
+            result += (_v2NeedsLeadingFunctionSpace(result) ? " " : "") + converted.value + (needsTrailing ? " " : "");
+        } else {
+            result += converted.value;
+        }
         i = converted.end;
     }
     return result;
@@ -1080,6 +1175,13 @@ function _v2ReadScriptToken(source, index) {
         const group = _v2ReadGroup(source, index, "{", "}");
         if (group) return group;
     }
+    if (source.charAt(index) === "\\") {
+        let end = index + 1;
+        while (end < source.length && /[A-Za-z]/.test(source.charAt(end))) end++;
+        if (end < source.length && source.slice(index + 1, end) === "atan" && source.charAt(end) === "2") end++;
+        if (end > index + 1) return { value: source.slice(index, end), end };
+        if (index + 1 < source.length) return { value: source.slice(index, index + 2), end: index + 2 };
+    }
     if (index < source.length) {
         return {
             value: source.charAt(index),
@@ -1088,15 +1190,39 @@ function _v2ReadScriptToken(source, index) {
     }
     return null;
 }
+/** @description 첨자 텍스트 정리 */
+function _v2NormalizeScriptText(value) {
+    return String(value || "")
+        .replace(/\s*([+\-=→←])\s*/g, "$1")
+        .replace(/[ \t\r\f\v\u2000-\u200A\u205F\u3000]+/g, " ")
+        .trim();
+}
+/** @description 첨자 의미 보존 변환 */
+function _v2ConvertScriptValue(value, scriptMap, marker) {
+    const normalized = _v2NormalizeScriptText(value);
+    if (!normalized) return marker;
+    let canUseScript = true;
+    for (let i = 0; i < normalized.length; i++) {
+        if (!scriptMap.has(normalized.charAt(i))) {
+            canUseScript = false;
+            break;
+        }
+    }
+    if (canUseScript) return _convertToScript(normalized, scriptMap);
+    if (normalized.length === 1) return marker + normalized;
+    return marker + V2_LEFT_BRACE_PLACEHOLDER + normalized + V2_RIGHT_BRACE_PLACEHOLDER;
+}
 /** @description 첨자/위첨자 변환 */
-function _v2ConvertScripts(source) {
+function _v2ConvertScripts(source, depth) {
+    if (!source.includes("_") && !source.includes("^")) return source;
     let result = "";
     for (let i = 0; i < source.length;) {
         const ch = source.charAt(i);
         if ((ch === "_" || ch === "^") && i + 1 < source.length) {
             const token = _v2ReadScriptToken(source, i + 1);
             if (token) {
-                const converted = _convertToScript(token.value, ch === "_" ? subscriptsMap : superscriptsMap);
+                const tokenValue = _v2ConvertMath(token.value, depth + 1);
+                const converted = _v2ConvertScriptValue(tokenValue, ch === "_" ? subscriptsMap : superscriptsMap, ch);
                 result += converted;
                 i = token.end;
                 continue;
@@ -1118,13 +1244,21 @@ function _v2ConvertMathEnvironment(source) {
 }
 /** @description 변환 결과 정리 */
 function _v2CleanupMath(source) {
-    return source
+    let result = source
         .replace(RE_DISPLAYSTYLE, "")
         .replace(/[{}]/g, "")
         .replace(/\s*([+\-=<>≤≥≈≠×÷∙∘∧∨⟺⇒⇐→←∪∩∈∉⊂⊃⊆⊇])\s*/g, " $1 ")
         .replace(/[ \t\r\f\v\u2000-\u200A\u205F\u3000]+/g, " ")
         .replace(/\n[ \t]+/g, "\n")
         .trim();
+    result = result
+        .replace(RE_V2_LEFT_BRACE_PLACEHOLDER, "{")
+        .replace(RE_V2_RIGHT_BRACE_PLACEHOLDER, "}")
+        .replace(/([_^])\{([^}]*)\}/g, (match, marker, body) => marker + "{" + _v2NormalizeScriptText(body) + "}")
+        .replace(/\b(lim(?:_\{[^}]+\}|[₀-₉ₐ-ₜ₊₋₌₍₎]+)?(?:\^\{[^}]+\}|[⁰-⁹⁺⁻⁼⁽⁾]+)?)(?=[A-Za-z0-9α-ωΑ-Ω∂√ΣΠ∫])/g, "$1 ")
+        .replace(/[ \t\r\f\v\u2000-\u200A\u205F\u3000]+/g, " ")
+        .trim();
+    return result;
 }
 /** @description 수식 본문 변환 */
 function _v2ConvertMath(math, depth = 0) {
@@ -1133,7 +1267,7 @@ function _v2ConvertMath(math, depth = 0) {
     result = result.replace(RE_DFRAC, "\\frac");
     result = _v2ConvertEnvironments(result);
     result = _v2ConvertCommands(result, depth);
-    result = _v2ConvertScripts(result);
+    result = _v2ConvertScripts(result, depth);
     result = _v2ConvertMathEnvironment(result);
     return _v2CleanupMath(result);
 }
@@ -1207,7 +1341,7 @@ function _v2ReplaceMathSegments(text) {
         if (text.startsWith("\\begin{", i)) {
             const env = _v2FindEnvironmentEnd(text, i);
             if (env) {
-                result += _v2ConvertEnvironment(env.env, env.content);
+                result += _v2ConvertEnvironment(env.env, env.content, true);
                 i = env.end;
                 continue;
             }

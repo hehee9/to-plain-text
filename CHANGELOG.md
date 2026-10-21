@@ -1,6 +1,14 @@
 # Changelog
 
 
+## v1.4.0 (2026.10.21)
+### Added
+- [RichText 기반 마크다운 변환](./markdownRichText.js) 추가
+
+### Fixed
+- 누락된 LaTeX 수식 규칙 추가
+
+
 ## v1.3.3 (2026.06.14)
 ### Fixed
 - `LaTeX.js`: frac 축약형 등을 제대로 변환하지 못하는 문제 수정

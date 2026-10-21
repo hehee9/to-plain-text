@@ -88,6 +88,7 @@ function mdToText(markdown, useKakaoMarkdown = false) {
     const codeBlocks = [];
     const inlineCodes = [];
     const protectedUrls = [];
+    let kakaoHeadingShift = 0;
 
 
     /* ============================= 헬퍼 함수 =============================== */
@@ -149,10 +150,11 @@ function mdToText(markdown, useKakaoMarkdown = false) {
         }
         
         const tableResult = [];
-        const divider = "-------------------------\n";
+        const divider = useKakaoMarkdown ? "────────────\n" : "-------------------------\n";
         
         for (let colIndex = 0; colIndex < headers.length; colIndex++) {
-            tableResult.push(`【${headers[colIndex]}】\n`);
+            const headerText = `【${headers[colIndex]}】`;
+            tableResult.push(`${headerText}\n`);
             const isGenre = (headers[colIndex] === "장르");
             let itemCounter = 0;
             
@@ -223,64 +225,33 @@ function mdToText(markdown, useKakaoMarkdown = false) {
 
         return "　".repeat(Math.max(0, level - 1));
     }
+    /** @description 카카오 헤딩 상향 폭 계산 */
+    function _getKakaoHeadingShift(text) {
+        let minLevel = 7;
+        text.replace(MD_PATTERNS.HEADING, (match, hashes) => {
+            minLevel = Math.min(minLevel, hashes.length);
+            return match;
+        });
+        return minLevel <= 6 ? Math.max(0, minLevel - 1) : 0;
+    }
+    /** @description 카카오 헤딩 레벨 보정 */
+    function _getKakaoHeadingLevel(level) {
+        return Math.min(2, Math.max(1, level - kakaoHeadingShift));
+    }
     /** @description 리스트/체크박스 들여쓰기 계산 */
     function _getListIndent(level) {
         return useKakaoMarkdown ? "　".repeat(level) : " ".repeat(level * 2);
     }
-    /** @description 카카오 헤딩 내부의 볼드만 기존 규칙으로 변환 */
-    function _convertHeadingBoldForKakao(text) {
-        const _findClosingBold = (source, start, delimiter) => {
-            const marker = delimiter.charAt(0);
-            for (let i = start; i < source.length - 1; i++) {
-                if (source.slice(i, i + 2) !== delimiter) continue;
-                if (source.charAt(i - 1) === marker || source.charAt(i + 2) === marker) continue;
-                return i;
-            }
-            return -1;
-        };
-        let convertedText = "";
-        let index = 0;
-
-        while (index < text.length) {
-            const delimiter = (
-                text.slice(index, index + 2) === "**" && text.charAt(index - 1) !== "*" && text.charAt(index + 2) !== "*"
-            ) ? "**" : (
-                text.slice(index, index + 2) === "__" && text.charAt(index - 1) !== "_" && text.charAt(index + 2) !== "_"
-            ) ? "__" : null;
-
-            if (!delimiter) {
-                convertedText += text.charAt(index);
-                index++;
-                continue;
-            }
-
-            const closeIndex = _findClosingBold(text, index + 2, delimiter);
-            if (closeIndex === -1) {
-                convertedText += text.charAt(index);
-                index++;
-                continue;
-            }
-
-            const content = text.slice(index + 2, closeIndex);
-            const converted = _convertToBoldSpecial(content);
-            convertedText += _isAllConvertible(content, true) ? converted : `❪${converted}❫`;
-            index = closeIndex + 2;
-        }
-
-        return convertedText;
-    }
     /** @description 헤딩 처리 */
     function _processHeading(match, hashes, content) {
         const level = hashes.length;
-        const indent = _getHeadingIndent(level);
         let pureContent = content.trim();
 
         if (useKakaoMarkdown) {
-            pureContent = _convertHeadingBoldForKakao(content);
-            const trailingText = match.slice(match.indexOf(content) + content.length);
-            return `\n${indent}${_formatKakaoEmphasis("**", `【${pureContent}】`, trailingText.charAt(0))}\n`;
+            return `${"#".repeat(_getKakaoHeadingLevel(level))} ${pureContent}`;
         }
 
+        const indent = _getHeadingIndent(level);
         const start = pureContent.charAt(0);
         const end = pureContent.charAt(pureContent.length - 1);
         if ((start === "❪" && end === "❫") || (start === "❮" && end === "❯") || (start === "❬" && end === "❭")) {
@@ -392,6 +363,65 @@ function mdToText(markdown, useKakaoMarkdown = false) {
             return fence + '\n' + line + '\n' + fence;
         }).join('\n');
     }
+    /** @description 카카오 빈 줄 보존 */
+    function _preserveKakaoBlankLines(text) {
+        if (!useKakaoMarkdown) return text;
+        const lines = text.split("\n");
+        for (let i = 1; i < lines.length - 1; i++) {
+            if (/^[ \t]*$/.test(lines[i])) lines[i] = ZERO_WIDTH_SPACE;
+        }
+        return lines.join("\n");
+    }
+    /** @description 카카오 단일 물결표 이스케이프 */
+    function _escapeSingleTildesForKakao(text) {
+        if (!useKakaoMarkdown || text.indexOf("~") === -1) return text;
+
+        let output = "";
+        for (let i = 0; i < text.length;) {
+            const linkStart = text.charAt(i) === "!" && text.charAt(i + 1) === "[" ? i + 1 : text.charAt(i) === "[" ? i : -1;
+            if (linkStart >= 0) {
+                const closeBracket = text.indexOf("]", linkStart + 1);
+                if (closeBracket >= 0 && text.charAt(closeBracket + 1) === "(") {
+                    const closeParen = text.indexOf(")", closeBracket + 2);
+                    if (closeParen >= 0) {
+                        output += text.slice(i, closeParen + 1);
+                        i = closeParen + 1;
+                        continue;
+                    }
+                }
+            }
+
+            if (text.startsWith("http://", i) || text.startsWith("https://", i)) {
+                let end = i;
+                while (end < text.length && !/[\s[\]()]/.test(text.charAt(end))) end++;
+                output += text.slice(i, end);
+                i = end;
+                continue;
+            }
+
+            if (text.charAt(i) === "`") {
+                let fenceEnd = i + 1;
+                while (fenceEnd < text.length && text.charAt(fenceEnd) === "`") fenceEnd++;
+                const fence = text.slice(i, fenceEnd);
+                const closeIndex = text.indexOf(fence, fenceEnd);
+                if (closeIndex >= 0) {
+                    output += text.slice(i, closeIndex + fence.length);
+                    i = closeIndex + fence.length;
+                    continue;
+                }
+            }
+
+            if (text.charAt(i) === "~") {
+                output += (text.charAt(i - 1) === "~" || text.charAt(i + 1) === "~") ? "~" : "∼";
+                i++;
+                continue;
+            }
+
+            output += text.charAt(i);
+            i++;
+        }
+        return output;
+    }
 
     // 토큰 생성 헬퍼
     const _makeToken = (type, index) => `${TOKEN_START}${type}${INDEX_CHAR[index]}${TOKEN_END}`;
@@ -432,7 +462,11 @@ function mdToText(markdown, useKakaoMarkdown = false) {
             const token = _makeToken(TOKEN_INLINE, inlineCodes.length);
             inlineCodes.push(code);
             return token;
-        })
+        });
+
+    if (useKakaoMarkdown) kakaoHeadingShift = _getKakaoHeadingShift(result);
+
+    result = result
         .replace(MD_PATTERNS.HORIZONTAL_LINE, "━".repeat(20))
         .replace(MD_PATTERNS.HEADING, _processHeading)
         .replace(MD_PATTERNS.CHECKBOX, (match, spaces, marker, checkState, content) => {
@@ -481,9 +515,13 @@ function mdToText(markdown, useKakaoMarkdown = false) {
             });
     }
 
-    result = result
-        .replace(MD_PATTERNS.STRIKETHROUGH, _processStrikethrough)
-        .replace(MD_PATTERNS.TABLE, _processTable);
+    result = useKakaoMarkdown
+        ? result.replace(MD_PATTERNS.TABLE, _processTable)
+        : result
+            .replace(MD_PATTERNS.STRIKETHROUGH, _processStrikethrough)
+            .replace(MD_PATTERNS.TABLE, _processTable);
+
+    result = _preserveKakaoBlankLines(result);
 
     // 토큰 복원
     result = result.replace(_getAllTokensRegex(), (match, type, idxChar) => {
@@ -505,11 +543,12 @@ function mdToText(markdown, useKakaoMarkdown = false) {
 
     // 이미지 처리
     result = result.replace(MD_PATTERNS.IMAGE, (match, imgFlag, text, url) => {
+        if (useKakaoMarkdown && !imgFlag) return `[${text}](${url})`;
         if (text.trim().toLowerCase() === url.trim().toLowerCase()) return url + " ";
         return `${text}( ${url} )`;
     });
 
-    return result;
+    return _escapeSingleTildesForKakao(result);
 }
 
 
